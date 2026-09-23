@@ -102,7 +102,13 @@ class FractionalDataloader:
     def __iter__(self):
         cur_elems = 0
         if self.seed is not None:
-            self.dataloader.dataset.set_seed(self.seed)
+            # set_seed exists on the ZipIt! dataset wrappers, not on a plain
+            # torch Subset, so guard it rather than crashing on CIFAR subsets.
+            # Note this branch also resets the GLOBAL rng on every pass, so a
+            # fixed seed gives every epoch the same ordering -- pass seed=None
+            # unless that is genuinely what you want.
+            if hasattr(self.dataloader.dataset, 'set_seed'):
+                self.dataloader.dataset.set_seed(self.seed)
             torch.manual_seed(self.seed)
             random.seed(self.seed)
             np.random.seed(self.seed)

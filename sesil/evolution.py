@@ -283,7 +283,7 @@ def mutate_and_save(offspring, args, data, next_dir, budget, logger, generation)
                   f'cost={cost:.3f} epoch-equiv')
 
             model, _ = mutate(model, train_loader, val_loader,
-                              sample_budget=sample_budget, seed=args.seed)
+                              sample_budget=sample_budget)
 
             logger.log_train({
                 'stage': 'mutation',

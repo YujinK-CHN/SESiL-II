@@ -16,12 +16,19 @@ same number of presentations, cycling its subset as many times as needed.
 from utils import FractionalDataloader, train_logits
 
 
-def mutate(model, train_loader, test_loader, sample_budget, seed=None):
+def mutate(model, train_loader, test_loader, sample_budget):
     """Finetune for exactly `sample_budget` sample-presentations.
 
     `sample_budget` may be smaller than the agent's training set (sub-epoch
     training) or larger (multiple passes); FractionalDataloader handles both,
     cycling the underlying loader when it runs out.
+
+    Deliberately no `seed` argument. FractionalDataloader reseeds the global
+    torch/numpy/random state on every __iter__ when given one, so passing a
+    fixed seed here would hand every agent in every generation the identical
+    data ordering -- erasing exactly the variation that makes two siblings
+    diverge. The run is already reproducible from utils.set_seed() at startup;
+    letting the global RNG advance is what keeps each mutation distinct.
 
     Returns (model, accuracy).
     """
@@ -31,7 +38,7 @@ def mutate(model, train_loader, test_loader, sample_budget, seed=None):
     # Only wrap when the budget is not exactly one pass -- avoids the extra
     # iterator layer in the common whole-epoch case.
     if abs(fraction - 1.0) > 1e-9:
-        loader = FractionalDataloader(train_loader, fraction, seed=seed)
+        loader = FractionalDataloader(train_loader, fraction)
     else:
         loader = train_loader
 
