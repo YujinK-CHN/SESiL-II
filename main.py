@@ -62,8 +62,16 @@ def main(argv=None):
         eval_interval=args.eval_interval,
         logger=logger,
         budget=budget,
+        # Carried on every eval record so plot_results can separate variants
+        # without anyone having to remember which directory was which.
         meta={'method': args.method, 'seed': args.seed, 'dataset': args.dataset,
-              'merger': args.merger if args.method == 'sesil' else None},
+              'merger': args.merger if args.method == 'sesil' else None,
+              'pretrain_mode': args.pretrain_mode if args.method == 'sesil' else None,
+              'phase_a_method': (args.phase_a_method
+                                 if args.method == 'sesil'
+                                 and args.pretrain_mode == 'ssl' else None),
+              'baseline_init': (args.baseline_init
+                                if args.method == 'baseline' else None)},
     )
 
     _print_banner(args, data, budget)

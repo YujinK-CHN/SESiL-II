@@ -13,6 +13,12 @@
 #               when it runs out; the baseline spends it as epochs.
 #   --seeds     comma-separated seeds
 #
+# For several seeds at once:
+#   bash run.sh --seeds 0,1,2 --run-mode parallel --gpus 0,1,2
+# Each run claims the least-loaded of the listed GPUs (lock files under
+# results/.gpu_locks), so seeds spread across devices instead of all landing on
+# cuda:0. Without --gpus they use every visible GPU.
+#
 # Everything else -- merger, certification, population shape, hyper-parameters --
 # lives in config.py. Edit it there.
 #
@@ -39,6 +45,7 @@ SEEDS="0"
 METHODS=(sesil)            # sesil | baseline  (override with --method)
 RUN_MODE="sequential"      # sequential | parallel
 EXP_NAME="check"
+GPUS=""                    # e.g. "0,1,2"; empty = every visible GPU
 
 EXTRA_ARGS=()
 
@@ -50,6 +57,7 @@ while [[ $# -gt 0 ]]; do
     --method)    METHODS=("$2"); shift 2;;
     --run-mode)  RUN_MODE="$2";  shift 2;;
     --exp-name)  EXP_NAME="$2";  shift 2;;
+    --gpus)      GPUS="$2";      shift 2;;
     *)           EXTRA_ARGS+=("$1"); shift;;
   esac
 done
@@ -61,6 +69,13 @@ echo "budget  : $BUDGET"
 echo "seeds   : ${SEED_LIST[*]}"
 echo "methods : ${METHODS[*]}"
 echo "mode    : $RUN_MODE"
+if [[ -n "$GPUS" ]]; then
+  # Read by sesil/gpu.py when --device is not given explicitly.
+  export SESIL_GPUS="$GPUS"
+  echo "gpus    : $GPUS  (least-loaded claimed per run)"
+else
+  echo "gpus    : all visible"
+fi
 
 COMMON_ARGS=(--dataset "$DATASET" --budget "$BUDGET" --exp-name "$EXP_NAME")
 

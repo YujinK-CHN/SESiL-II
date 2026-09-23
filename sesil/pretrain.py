@@ -38,7 +38,12 @@ from sklearn.model_selection import train_test_split
 
 from sesil.mutation import mutate
 from sesil.population import list_population, read_meta, save_agent
-from sesil.ssl import get_objective, reset_classifier
+from sesil.ssl import (
+    get_objective,
+    reset_classifier,
+    uses_labels,
+    views_per_image,
+)
 
 
 BACKBONE_META = 'backbone.json'
@@ -62,21 +67,48 @@ def build_model(args, num_classes):
 # --------------------------------------------------------------------------- #
 
 def phase_budgets(args):
-    """(phase_a, phase_b) epoch-equivalents, from --pretrain-budget."""
-    if args.phase_a_method == 'none' or args.phase_a_ratio <= 0:
+    """(phase_a, phase_b) epoch-equivalents, from --pretrain-budget.
+
+    In --pretrain-mode none there is no phase A: the whole budget goes to
+    training each agent from scratch on its own subset, which is the original
+    SESiL scheme, kept available as a baseline.
+    """
+    if args.pretrain_mode != 'ssl' or args.phase_a_ratio <= 0:
         return 0.0, float(args.pretrain_budget)
     phase_a = float(args.pretrain_budget) * float(args.phase_a_ratio)
     return phase_a, float(args.pretrain_budget) - phase_a
 
 
+def cost_multiplier(args):
+    """Epoch-equivalents charged per image in phase A.
+
+    Defaults to the objective's own forward passes per image, so switching
+    --phase-a-method re-prices phase A automatically rather than charging
+    whatever number happened to be left in the flag.
+    """
+    if args.phase_a_cost_multiplier is not None:
+        return float(args.phase_a_cost_multiplier)
+    return views_per_image(args.phase_a_method)
+
+
 def backbone_dir(args):
-    """Where the phase-A backbone is cached."""
+    """Where the phase-A backbone is cached.
+
+    Derived from the population directory, which is seed-scoped -- so every
+    seed builds and caches its own backbone and concurrent runs never write to
+    the same file. Pass --backbone-path to share one deliberately, and build it
+    once (`--pretrain-only`) before launching the rest rather than racing.
+    """
     if args.backbone_path:
         return args.backbone_path
-    # Beside the population, but keyed only by what affects the backbone --
-    # NOT by pop-size or classes-per-model, which are phase-B concerns.
+    tag = args.phase_a_method
+    if tag == 'cluster':
+        # Two cluster backbones with different k are different backbones; without
+        # this they would silently share one cache entry.
+        k = args.cluster_k or args.num_classes
+        tag = f'{tag}_k{k}_r{args.cluster_rounds}'
     return os.path.join(os.path.dirname(os.path.normpath(args.population_dir)),
-                        f'backbone_{args.phase_a_method}')
+                        f'backbone_{tag}')
 
 
 # --------------------------------------------------------------------------- #
@@ -91,8 +123,8 @@ def ensure_backbone(args, data, budget, logger=None):
     """
     phase_a, _ = phase_budgets(args)
     if phase_a <= 0:
-        print('[phase A] skipped (--phase-a-ratio 0 or --phase-a-method none); '
-              'agents will start from random initialisations.')
+        print(f'[phase A] skipped (--pretrain-mode {args.pretrain_mode}); '
+              f'agents will start from random initialisations.')
         return None, 0.0
 
     path = backbone_dir(args)
@@ -113,12 +145,15 @@ def ensure_backbone(args, data, budget, logger=None):
 
     # Each image costs `multiplier` epoch-equivalents, so the budget buys
     # proportionally fewer images than a supervised pass would.
-    multiplier = max(float(args.phase_a_cost_multiplier), 1e-9)
+    multiplier = max(cost_multiplier(args), 1e-9)
     sample_budget = int(round(phase_a * budget.train_set_size / multiplier))
 
+    labelled = uses_labels(args.phase_a_method)
     print(f'[phase A] {args.phase_a_method} on all classes: '
           f'{phase_a:.2f} epoch-equiv budget, cost multiplier {multiplier:g} '
           f'-> {sample_budget} image-presentations')
+    print(f'[phase A] labels: '
+          f'{"USED (control, not self-supervised)" if labelled else "not used"}')
 
     model = build_model(args, data.num_classes)
     objective = get_objective(args.phase_a_method)
@@ -134,6 +169,7 @@ def ensure_backbone(args, data, budget, logger=None):
         json.dump({'cost': round(cost, 6),
                    'method': args.phase_a_method,
                    'multiplier': multiplier,
+                   'uses_labels': labelled,
                    'arch': args.arch,
                    **info}, f, indent=2)
 
@@ -237,9 +273,14 @@ def pretrain_population(args, data, budget=None, logger=None):
     # the backbone too, not just the finetuning.
     backbone_share = (backbone_cost_ or 0.0) / max(args.pop_size, 1)
 
-    print(f'[phase B] {args.pop_size} agents x {per_agent:.3f} epoch-equiv '
+    # In mode 'none' there is no phase A, so calling this "phase B" in the log
+    # would be misleading -- it is simply the whole pretrain stage.
+    label = 'phase B' if backbone is not None else 'pretrain'
+
+    print(f'[{label}] {args.pop_size} agents x {per_agent:.3f} epoch-equiv '
           f'= {sample_budget} presentations each, on {args.classes_per_model} '
-          f'of {data.num_classes} classes')
+          f'of {data.num_classes} classes'
+          f'{" from the shared backbone" if backbone is not None else " from scratch"}')
 
     val_loader = data.val_loader()
     start = time.time()
@@ -265,12 +306,12 @@ def pretrain_population(args, data, budget=None, logger=None):
         if budget is not None:
             budget.spend_samples('phase_b', sample_budget, epochs=1)
 
-        print(f'[phase B] {individual + 1}/{args.pop_size} on classes {split}  '
+        print(f'[{label}] {individual + 1}/{args.pop_size} on classes {split}  '
               f'{sample_budget} presentations over {n_available} samples')
 
         model, final_acc = mutate(model, train_loader, val_loader,
                                   sample_budget=sample_budget)
-        print(f'[phase B] val accuracy: {final_acc}')
+        print(f'[{label}] val accuracy: {final_acc}')
 
         meta = {
             'generation': 0,
@@ -280,12 +321,13 @@ def pretrain_population(args, data, budget=None, logger=None):
             # What a later run pays to reuse this agent: its own phase-B share
             # plus its slice of the shared backbone.
             'pretrain_cost': round(per_agent + backbone_share, 6),
+            'pretrain_mode': args.pretrain_mode,
             'phase_a_method': args.phase_a_method if backbone is not None else None,
             'parents': [],
             'is_loner': False,
         }
         save_path = save_agent(model, args.population_dir, individual, args.arch, meta)
-        print(f'[phase B] saved -> {save_path}')
+        print(f'[{label}] saved -> {save_path}')
 
     print(f'[pretrain] done in {time.time() - start:.1f}s  '
           f'(phase A {phase_a:.2f} + phase B {phase_b:.2f} epoch-equiv)')

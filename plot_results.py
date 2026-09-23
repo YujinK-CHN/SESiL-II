@@ -92,7 +92,15 @@ def load_run(run_dir):
     head = records[0]
     method = head.get('method', 'unknown')
     merger = head.get('merger')
-    series = f'{method} ({merger})' if method == 'sesil' and merger else method
+    pretrain = head.get('pretrain_mode')
+
+    if method == 'sesil':
+        parts = [p for p in (merger, pretrain) if p]
+        series = f'{method} ({", ".join(parts)})' if parts else method
+    else:
+        # The baseline's variants differ by where they start, not how they merge.
+        init = head.get('baseline_init')
+        series = f'{method} ({init})' if init and init != 'scratch' else method
 
     return {
         'dir': run_dir,

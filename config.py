@@ -91,7 +91,16 @@ def _add_run_config(parser):
     group.add_argument('--exp-name', type=str, default='check',
                        help='Identifier for this experiment; names the output folder.')
     group.add_argument('--device', type=str, default=None,
-                       help="'cuda', 'cpu', or unset to auto-detect.")
+                       help="'cpu', an explicit 'cuda:N', or unset to auto-detect and "
+                            'claim a GPU via --gpus. An explicit value is always '
+                            'respected as given.')
+    group.add_argument('--gpus', type=str, default=None,
+                       help="Comma-separated GPU indices this run may use, e.g. '0,1,3'. "
+                            'Each process claims the least-loaded one through lock files '
+                            'in results/.gpu_locks, so several seeds launched together '
+                            'spread across devices instead of stacking on cuda:0. Unset '
+                            '(or the SESIL_GPUS environment variable) means every visible '
+                            'GPU. Ignored when --device names a device explicitly.')
     group.add_argument('--output-root', type=str, default='./results',
                        help='Root for all run artefacts (checkpoints + csv).')
     group.add_argument('--data-dir', type=str, default='./data',
@@ -172,12 +181,27 @@ def _add_pretrain_config(parser):
                             'in sesil/ssl.py -- so switching methods re-prices phase A '
                             'automatically instead of silently charging the wrong rate. '
                             'Set it explicitly only to override that.')
+    group.add_argument('--cluster-k', type=int, default=None,
+                       help="SSL MODE, --phase-a-method cluster ONLY. Number of k-means "
+                            "clusters used as pseudo-labels. Defaults to the dataset's "
+                            "class count. Over-clustering (a multiple of it) is what "
+                            "DeepCluster does in practice, on the grounds that several "
+                            "tight clusters beat one loose one.")
+    group.add_argument('--cluster-rounds', type=int, default=5,
+                       help='SSL MODE, --phase-a-method cluster ONLY. How many times to '
+                            're-cluster during phase A. The budget is split evenly among '
+                            'rounds. More rounds means fresher pseudo-labels but fewer '
+                            'gradient steps each.')
     group.add_argument('--backbone-path', type=str, default=None,
                        help='Where the phase-A backbone is cached. Defaults to a path '
                             'beside the population. Reused across runs and charged at its '
                             'recorded creation cost, like the population itself.')
     group.add_argument('--pretrain-batch-size', type=int, default=500)
-    group.add_argument('--pretrain-workers', type=int, default=8)
+    group.add_argument('--pretrain-workers', type=int, default=2,
+                       help='DataLoader workers per run. Low by default because '
+                            'this is PER RUN: several seeds in parallel multiply '
+                            'it, and 3 runs x 8 workers is 24 loader processes '
+                            'competing for the same cores.')
     group.add_argument('--population-dir', type=str, default=None,
                        help='Where the initial population lives. Defaults to a path '
                             'derived from the dataset/model/population settings.')
@@ -342,13 +366,29 @@ def parse_int_list(value):
 def default_population_dir(args):
     """Where the initial population lives when --population-dir is not given.
 
-    e.g. ./checkpoints/cifar10_C3_P10/resnet20x4/initial
+    e.g. ./checkpoints/cifar10_C3_P10/resnet20x4/seed0/initial
 
-    Keyed by dataset/classes/population so two different population shapes never
-    collide, and so a population is reused across runs that share that shape.
+    Keyed by dataset / classes-per-model / population size AND SEED.
+
+    The seed is what makes concurrent runs safe. Without it, every seed of one
+    configuration writes its population into the same directory, so seeds
+    launched in parallel interleave their writes and corrupt each other -- and
+    even run sequentially, later seeds would silently inherit the first seed's
+    population, which also means they inherit a population built against a
+    different train/validation split.
+
+    It also makes seeds genuinely independent: pretrain randomness varies with
+    the seed like everything else, so error bands across seeds cover the whole
+    pipeline rather than the evolution stage alone.
+
+    To share one population across seeds deliberately -- an ablation that holds
+    pretrain fixed and varies only evolution -- pass --population-dir
+    explicitly. Build it once first (`--pretrain-only`) rather than racing
+    several runs at it.
     """
     tag = f'{args.dataset}_C{args.classes_per_model}_P{args.pop_size}'
-    return os.path.join('./checkpoints', tag, arch_name(args), 'initial')
+    return os.path.join('./checkpoints', tag, arch_name(args),
+                        f'seed{args.seed}', 'initial')
 
 
 def run_dir(args):
@@ -385,11 +425,15 @@ def build_raw_config(args):
 
 
 def resolve(args):
-    """Fill in values that depend on other flags. Call once after parsing."""
-    import torch
+    """Fill in values that depend on other flags. Call once after parsing.
 
-    if args.device is None:
-        args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    Device resolution claims a concrete GPU rather than leaving it as plain
+    'cuda'. Several seeds launched in parallel would otherwise all resolve to
+    cuda:0 and leave the rest of the machine idle. See sesil/gpu.py.
+    """
+    from sesil.gpu import resolve_device
+
+    args.device = resolve_device(args)
 
     args.num_classes = DATASET_PRESETS[args.dataset]['num_classes']
     args.arch = arch_name(args)

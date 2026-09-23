@@ -12,23 +12,32 @@ Every objective has the signature
 and must stop after roughly `sample_budget` image-presentations, so the budget
 ledger stays honest regardless of which method is used. `info_dict` is logged.
 
-Two are provided:
+Three are provided:
 
-    rotation    a real self-supervised pretext task -- rotate each image by
-                0/90/180/270 degrees and predict which. Uses NO labels. Cheap,
-                dependency-free, and well suited to small CIFAR backbones,
-                where contrastive methods usually need large batches and long
-                schedules to pay off.
+    rotation    a self-supervised pretext task -- rotate each image by
+                0/90/180/270 degrees and predict which. Cheap and
+                dependency-free, but the task is only loosely related to
+                object identity.
+    cluster     DeepCluster-style self-labelling: extract features, k-means
+                them, train on the cluster assignment as a pseudo-label, then
+                re-cluster and repeat. Closer in spirit to classification than
+                rotation is, and it reuses the ordinary cross-entropy path
+                rather than needing a bespoke loss.
     supervised  trains on all classes WITH labels. Not self-supervised, and
                 deliberately so: it is the control that separates "a shared
                 backbone helps" from "self-supervision helps". Without it, a
                 gain from phase A is ambiguous.
 
+Both self-supervised options discard their pretext head afterwards -- only the
+trunk is carried into phase B, which re-initialises the classifier per agent.
+Cluster ids are arbitrary and do not correspond to real classes, so a
+cluster-trained head would be meaningless to keep even if phase B kept it.
+
 Adding a contrastive method (SimCLR, SimSiam, BYOL) means writing one function
-here that consumes a sample budget, and setting --phase-a-cost-multiplier to
-its views-per-image.
+here that consumes a sample budget and registering it with its views-per-image.
 """
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -169,6 +178,108 @@ def train_rotation(model, loader, sample_budget, args):
         'objective': 'rotation',
         'images_seen': seen,
         'pretext_accuracy': correct / max(total, 1),
+        'mean_loss': loss_sum / max(steps, 1),
+    }
+
+
+@register('cluster', views=2, uses_labels=False)
+def train_cluster(model, loader, sample_budget, args):
+    """DeepCluster-style self-labelling. Label-free.
+
+    Each round:
+        1. forward a slice of the data to get features (no gradients)
+        2. k-means those features into --cluster-k groups
+        3. train the trunk to predict the cluster assignment, as ordinary
+           cross-entropy against a temporary k-way head
+
+    Re-clustering every round is what stops the assignment ossifying around
+    whatever the randomly-initialised network happened to encode first.
+
+    The cost multiplier is 2: one forward pass for feature extraction plus one
+    forward-backward for training. That rounds the extraction pass up from its
+    true ~1/3 of a training step, which errs toward charging SESiL more rather
+    than less.
+
+    Images for a round are cached on CPU so the same slice can be clustered and
+    then trained on. At CIFAR sizes that is a few hundred MB at most; a larger
+    dataset would want index bookkeeping instead.
+    """
+    from sklearn.cluster import KMeans
+
+    device = args.device
+    k = int(getattr(args, 'cluster_k', 0) or args.num_classes)
+    rounds = max(int(getattr(args, 'cluster_rounds', 5)), 1)
+    per_round = max(int(sample_budget // rounds), 1)
+
+    head_name = classifier_name(model)
+    original_head = getattr(model, head_name)
+    pretext_head = nn.Linear(original_head.in_features, k).to(device)
+
+    setattr(model, head_name, nn.Identity())     # expose features
+    model = model.to(device)
+
+    optimiser = torch.optim.Adam(
+        list(model.parameters()) + list(pretext_head.parameters()), lr=1e-3)
+
+    seen, loss_sum, steps, correct, total = 0, 0.0, 0, 0, 0
+    cluster_sizes = []
+    pbar = tqdm(total=int(sample_budget), desc='Phase A (cluster)', unit='img')
+
+    for _round in range(rounds):
+        # ---- 1. features, no gradients ------------------------------- #
+        cached, feats = [], []
+        model.eval()
+        with torch.no_grad():
+            for images in _iterate_for(loader, per_round, with_labels=False):
+                cached.append(images)
+                feats.append(model(images.to(device)).detach().cpu())
+        if not cached:
+            break
+        features = torch.cat(feats).numpy()
+
+        # ---- 2. cluster ---------------------------------------------- #
+        n_clusters = min(k, len(features))
+        assignment = KMeans(n_clusters=n_clusters, n_init=4,
+                            random_state=args.seed).fit_predict(features)
+        counts = np.bincount(assignment, minlength=n_clusters)
+        cluster_sizes.append([int(c) for c in counts])
+
+        # ---- 3. train on the pseudo-labels --------------------------- #
+        model.train()
+        offset = 0
+        pseudo = torch.from_numpy(assignment).long()
+        for images in cached:
+            batch = images.shape[0]
+            targets = pseudo[offset:offset + batch].to(device)
+            offset += batch
+
+            optimiser.zero_grad(set_to_none=True)
+            logits = pretext_head(model(images.to(device)))
+            loss = F.cross_entropy(logits, targets)
+            loss.backward()
+            optimiser.step()
+
+            loss_sum += loss.item()
+            steps += 1
+            correct += (logits.argmax(1) == targets).sum().item()
+            total += targets.numel()
+            seen += batch
+            pbar.update(batch)
+
+    pbar.close()
+    setattr(model, head_name, original_head)     # restore the real head shape
+
+    # A near-degenerate clustering -- almost everything in one group -- means the
+    # pretext task taught the trunk nothing, so it is worth surfacing.
+    largest = max((max(c) / max(sum(c), 1) for c in cluster_sizes), default=0.0)
+
+    return model, {
+        'objective': 'cluster',
+        'images_seen': seen,
+        'clusters': k,
+        'rounds': rounds,
+        'pseudo_label_accuracy': correct / max(total, 1),
+        'largest_cluster_fraction': round(largest, 4),
         'mean_loss': loss_sum / max(steps, 1),
     }
 
