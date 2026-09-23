@@ -1,9 +1,8 @@
 """
-Method registry.
+Merge-operator registry.
 
-SESiL is one algorithm; the merge operator and the mate-selection strategy are
-arguments to it.  Both are looked up here so that adding a new operator means
-adding one line, not copying a 950-line training script.
+SESiL is one algorithm; the merge operator is an argument to it. Looking it up
+here means adding a new operator is one line, not a copied training script.
 """
 
 # --merger -> name of the function in matching_functions.py
@@ -23,26 +22,3 @@ def get_merger_name(merger):
             f'Unknown merger {merger!r}. Choose one of {sorted(MERGERS)}.'
         )
     return MERGERS[merger]
-
-
-def get_selection_fn(selection):
-    """Return the mate-selection strategy named by --selection.
-
-    Every strategy has the signature
-        fn(population_info, args) -> (pairs, loners)
-    where pairs is a list of (model_id_a, model_id_b) and loners is a list of
-    model ids that carry forward unmerged.
-    """
-    from sesil import selection as selection_module
-
-    table = {
-        'bidirectional': selection_module.select_bidirectional,
-        'breed':         selection_module.select_breed,
-        'guided':        selection_module.select_guided,
-        'hard':          selection_module.select_hard,
-    }
-    if selection not in table:
-        raise ValueError(
-            f'Unknown selection {selection!r}. Choose one of {sorted(table)}.'
-        )
-    return table[selection]

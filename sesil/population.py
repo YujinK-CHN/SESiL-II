@@ -58,23 +58,30 @@ def checkpoint_path(population_dir, agent_id, arch, version=0):
     return os.path.join(population_dir, agent_id, f'{arch}_v{version}.pth.tar')
 
 
-def save_agent(model, population_dir, index, arch, meta=None, head_index=0):
+def save_agent(model, population_dir, index, arch, meta=None):
     """Persist one agent: weights plus metadata.
 
-    A merged model is a ModelMerge, whose weights live in head_models; a plain
-    nn.Module is saved directly.
+    `model` must be a plain nn.Module. A ModelMerge is explicitly refused: with
+    partial zipping it is a composite of a merged trunk plus one head per
+    parent, and calling .state_dict() on it -- or on one of its head_models --
+    does NOT give a usable child. Saving head_models[i] whole keeps that
+    parent's own early layers instead of the merged trunk, which silently
+    writes the parent back out with none of the merge in it. Children are
+    spliced by sesil.merge.extract_children before they reach here.
     """
+    if hasattr(model, 'head_models'):
+        raise TypeError(
+            'save_agent received a ModelMerge. Extract children with '
+            'sesil.merge.extract_children() first -- saving a merge directly '
+            'discards the merged trunk.'
+        )
+
     agent_id = agent_name(index)
     save_dir = os.path.join(population_dir, agent_id)
     os.makedirs(save_dir, exist_ok=True)
 
     save_path = os.path.join(save_dir, f'{arch}_v0.pth.tar')
-
-    if hasattr(model, 'head_models'):
-        state_dict = model.head_models[head_index].state_dict()
-    else:
-        state_dict = model.state_dict()
-    torch.save(state_dict, save_path)
+    torch.save(model.state_dict(), save_path)
 
     write_meta(population_dir, agent_id, meta or {})
 

@@ -13,7 +13,7 @@
 #               when it runs out; the baseline spends it as epochs.
 #   --seeds     comma-separated seeds
 #
-# Everything else -- merger, selection, population shape, hyper-parameters --
+# Everything else -- merger, certification, population shape, hyper-parameters --
 # lives in config.py. Edit it there.
 #
 # Usage:

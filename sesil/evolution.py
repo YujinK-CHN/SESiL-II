@@ -48,7 +48,7 @@ from sesil.certificate import (
 )
 from sesil.data import get_loaders
 from sesil.fitness import evaluate_all_classes, summarise
-from sesil.merge import merge_pair, point_at
+from sesil.merge import extract_children, merge_couple, point_at
 from sesil.mutation import mutate
 from sesil.population import (
     generation_dir,
@@ -56,7 +56,7 @@ from sesil.population import (
     list_population,
     save_agent,
 )
-from sesil.registry import get_selection_fn
+from sesil.selection import select_mates
 
 
 def _log(results, csv_file, **extra):
@@ -121,7 +121,7 @@ def evaluate_and_certify(agent_ids, raw_config, args, csv_file, generation, budg
         _log(record, csv_file,
              Generation=generation, Stage='population', Agent=agent_id,
              Certificate=cert,
-             Merger=args.merger, Selection=args.selection, Seed=args.seed)
+             Merger=args.merger, Seed=args.seed)
         record['Model Name'] = agent_id      # selection keys on the id
         record['Certificate'] = cert
         record['Strength'] = strength
@@ -148,28 +148,40 @@ def breed(pairs, loners, population_info, raw_config, args, csv_file,
     by_id = {p['Model Name']: p for p in population_info}
     offspring = []
 
-    for pair in tqdm(pairs, desc=f'Gen {generation}: merging pairs'):
-        merged, config = merge_pair(pair, raw_config, args)
+    for pair in tqdm(pairs, desc=f'Gen {generation}: merging couples'):
+        merge, config = merge_couple(pair, raw_config, args)
         budget.count_forward_train(FORWARD_TRAIN_PASSES_PER_MERGE)
 
-        per_class, overall = evaluate_all_classes(
-            merged, config['data']['test']['full'], args.num_classes)
-        budget.count_forward_test(1)
+        # One merge, both children. Each splices the shared merged trunk onto a
+        # different parent's head, so siblings differ structurally rather than
+        # only by data-order noise -- and neither head is discarded.
+        children = extract_children(
+            merge, config, args, args.num_classes, config['data']['train']['full'])
+        budget.count_forward_train(len(children))   # BN recalibration per child
 
         cert = inherit([by_id[p]['Certificate'] for p in pair])
-        record = summarise(per_class, overall, cert)
-        _log(record, csv_file,
-             Generation=generation, Stage='offspring',
-             Parents='+'.join(pair), Certificate=cert,
-             Time=merged.compute_transform_time,
-             Merger=args.merger, Selection=args.selection, Seed=args.seed)
 
-        offspring.append({
-            'model': merged,
-            'certificate': cert,
-            'parents': list(pair),
-            'is_loner': False,
-        })
+        for head_index, (child, n_from_trunk) in enumerate(children):
+            # Evaluate the model that will actually be saved, not the composite.
+            per_class, overall = evaluate_all_classes(
+                child, config['data']['test']['full'], args.num_classes)
+            budget.count_forward_test(1)
+
+            record = summarise(per_class, overall, cert)
+            _log(record, csv_file,
+                 Generation=generation, Stage='offspring',
+                 Parents='+'.join(pair), Head=head_index,
+                 TrunkParams=n_from_trunk, Certificate=cert,
+                 Time=merge.compute_transform_time,
+                 Merger=args.merger, Seed=args.seed)
+
+            offspring.append({
+                'model': child,
+                'certificate': cert,
+                'parents': list(pair),
+                'head': head_index,
+                'is_loner': False,
+            })
 
     for loner in tqdm(loners, desc=f'Gen {generation}: carrying loners'):
         point_at(raw_config, [loner])
@@ -184,12 +196,13 @@ def breed(pairs, loners, population_info, raw_config, args, csv_file,
         record = summarise(by_id[loner]['Per Class'], by_id[loner]['Joint'], cert)
         _log(record, csv_file,
              Generation=generation, Stage='loner', Parents=loner, Certificate=cert,
-             Time=0.0, Merger=args.merger, Selection=args.selection, Seed=args.seed)
+             Time=0.0, Merger=args.merger, Seed=args.seed)
 
         offspring.append({
             'model': model,
             'certificate': cert,
             'parents': [loner],
+            'head': None,
             'is_loner': True,
         })
 
@@ -237,6 +250,7 @@ def mutate_and_save(offspring, args, next_dir, budget, generation, csv_file):
             'trained_on': classes,
             'explored': explored,
             'parents': child['parents'],
+            'head': child.get('head'),
             'is_loner': child['is_loner'],
         }
 
@@ -274,7 +288,6 @@ def mutate_and_save(offspring, args, next_dir, budget, generation, csv_file):
 def run_evolution(args, budget):
     """Evolve until the training budget is exhausted."""
     raw_config = build_raw_config(args)
-    selection_fn = get_selection_fn(args.selection)
 
     csv_file = os.path.join(args.run_dir, 'results.csv')
     os.makedirs(args.run_dir, exist_ok=True)
@@ -307,7 +320,7 @@ def run_evolution(args, budget):
             population_info = evaluate_and_certify(
                 agent_ids, raw_config, args, csv_file, generation, budget)
 
-            pairs, loners = selection_fn(population_info, args)
+            pairs, loners = select_mates(population_info, args)
             print(f'[gen {generation}] {len(pairs) // 2} couples, {len(loners)} loners')
 
             offspring = breed(pairs, loners, population_info, raw_config, args,

@@ -66,8 +66,8 @@ def main(argv=None):
         per_gen = estimate_generation_cost(args)
         gens = estimate_generations(args)
         per_agent = samples_for(args.individual_budget, budget.train_set_size)
-        print(f'merger     : {args.merger}')
-        print(f'selection  : {args.selection}')
+        print(f'merger     : {args.merger}'
+              f"  (stop-node {args.stop_node if args.stop_node is not None else 'none / full merge'})")
         print(f'population : {args.pop_size} x {args.classes_per_model} classes')
         print(f'  pretrain        {pre:.2f} epoch-equiv '
               f'({args.pop_size} agents x {args.pretrain_epochs} epochs on '

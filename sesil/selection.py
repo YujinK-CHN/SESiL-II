@@ -1,9 +1,11 @@
 """
 Mate selection.
 
-All four strategies consume the same population_info -- a list of dicts, one per
-agent, carrying 'Model Name', the per-class accuracy vector 'Per Class', and the
-'Certificate' granted this generation -- and return (pairs, loners).
+SESiL pairs agents by mutual, probabilistic choice over complementary skills.
+The strategy consumes population_info -- a list of dicts, one per agent,
+carrying 'Model Name', the per-class accuracy vector 'Per Class', the
+'Certificate' granted this generation, and the 'Strength' weights resolved from
+--mate-score -- and returns (pairs, loners).
 
 What counts as a skill is the **certificate**, not a re-thresholding of the
 accuracy vector. Certification already decided who is proficient in what, by
@@ -95,118 +97,41 @@ def probabilistic_choice(score_dict):
 
 
 # --------------------------------------------------------------------------- #
-# Strategies.  Signature: fn(population_info, args) -> (pairs, loners)
+# Strategy
 # --------------------------------------------------------------------------- #
 
-def select_bidirectional(population_info, args):
-    """The SESiL default: mutual, probabilistic mate choice.
+def select_mates(population_info, args):
+    """Mutual, probabilistic mate choice.
 
-    Each unpaired individual probabilistically picks a mate; only reciprocated
-    picks become couples.  Every couple is recorded twice, so it produces two
-    offspring and the population size is preserved.  Individuals nobody
-    reciprocated become loners and carry forward unchanged.
+    Each unpaired agent probabilistically picks a mate; only RECIPROCATED picks
+    become couples. A couple yields one child per parent (see
+    sesil.merge.extract_children), so each couple is recorded once and the
+    population size is preserved. Agents nobody reciprocated become loners and
+    carry forward unchanged, earning one random uncertified class to explore.
+
+    Returns (pairs, loners).
     """
     scores = build_score_matrix(population_info, **_score_kwargs(args))
 
-    models = list(scores.keys())
-    N = len(models)
+    agents = list(scores.keys())
+    n_agents = len(agents)
 
     pairs = []
     paired = set()
 
     for _ in range(args.max_retries):
-        choices = {m: probabilistic_choice(scores[m]) for m in models if m not in paired}
+        choices = {m: probabilistic_choice(scores[m])
+                   for m in agents if m not in paired}
 
         for a, b in choices.items():
             if b is not None and choices.get(b) == a:
                 if a not in paired and b not in paired:
                     pairs.append(tuple(sorted((a, b))))
-                    pairs.append(tuple(sorted((a, b))))   # two offspring per couple
                     paired.update([a, b])
 
-    loners = [m for m in models if m not in paired]
+    loners = [m for m in agents if m not in paired]
 
-    assert 2 * (len(pairs) // 2) + len(loners) == N, \
-        f'Population size mismatch: {2 * (len(pairs) // 2) + len(loners)} != {N}'
+    assert 2 * len(pairs) + len(loners) == n_agents, \
+        f'Population size mismatch: {2 * len(pairs) + len(loners)} != {n_agents}'
 
     return pairs, loners
-
-
-def select_breed(population_info, args):
-    """Parent A uniformly at random, parent B by mating score. No loners."""
-    scores = build_score_matrix(population_info, **_score_kwargs(args))
-    names = list(scores.keys())
-
-    pairs = []
-    for _ in range(len(names)):
-        a = np.random.choice(names)
-        b = _weighted_mate(scores[a], a)
-        pairs.append((a, b))
-
-    return pairs, []
-
-
-def select_guided(population_info, args):
-    """Parent A by fitness, parent B by mating score given A.
-
-    Fitness-proportional on --breed-key, so strong individuals reproduce more,
-    while who they pair with is still driven by complementary skills.
-    """
-    scores = build_score_matrix(population_info, **_score_kwargs(args))
-
-    names = [p['Model Name'] for p in population_info]
-    perf = np.array([float(p[args.breed_key]) for p in population_info], dtype=float)
-    probs = _normalise(perf)
-
-    pairs = []
-    for _ in range(len(names)):
-        a = np.random.choice(names, p=probs)
-        b = _weighted_mate(scores[a], a)
-        pairs.append((a, b))
-
-    return pairs, []
-
-
-def select_hard(population_info, args):
-    """Both parents by fitness alone -- skill complementarity is ignored.
-
-    The ablation that isolates how much of SESiL's benefit comes from the
-    mating score rather than from merging strong models.
-    """
-
-    names = [p['Model Name'] for p in population_info]
-    perf = np.array([float(p[args.breed_key]) for p in population_info], dtype=float)
-    probs = _normalise(perf)
-
-    pairs = []
-    for _ in range(len(names)):
-        a = np.random.choice(names, p=probs)
-        mates = [m for m in names if m != a]
-        if not mates:
-            continue
-        mate_probs = _normalise(
-            np.array([perf[names.index(m)] for m in mates], dtype=float)
-        )
-        b = np.random.choice(mates, p=mate_probs)
-        pairs.append((a, b))
-
-    return pairs, []
-
-
-# --------------------------------------------------------------------------- #
-# helpers
-# --------------------------------------------------------------------------- #
-
-def _normalise(values):
-    """Clamp negatives and turn into a probability vector."""
-    values = np.maximum(values, 0)
-    if values.sum() == 0:
-        return np.ones_like(values) / len(values)
-    return values / values.sum()
-
-
-def _weighted_mate(score_row, exclude):
-    """Pick a mate from score_row, score-proportional, never `exclude`."""
-    mates = [m for m in score_row.keys() if m != exclude]
-    mate_scores = np.array([score_row[m] for m in mates], dtype=float)
-    return np.random.choice(mates, p=_normalise(mate_scores))

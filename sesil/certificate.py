@@ -129,10 +129,9 @@ def training_classes(certificate, num_classes, is_loner=False, rng=None):
     in the loner pool by construction and is never left with nothing to train
     on.
 
-    The empty-certificate case is handled explicitly as well as via `is_loner`,
-    because the breed / guided / hard selection strategies produce no loners at
-    all; without it, an uncertified agent under those strategies would have an
-    empty training set.
+    The empty-certificate case is handled explicitly as well as via `is_loner`
+    so that an agent can never be left with nothing to train on, however mate
+    selection happens to pair it.
     """
     classes = set(certificate)
 

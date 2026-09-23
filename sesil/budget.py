@@ -37,9 +37,11 @@ from collections import defaultdict
 # loader exactly once, so the count is exact.
 #
 #   merge: reset_bn_stats on each of the 2 parents,
-#          compute_metrics for the alignment,
-#          reset_bn_stats on the merged child
-FORWARD_TRAIN_PASSES_PER_MERGE = 4
+#          compute_metrics for the alignment.
+#          Each extracted child's own BN recalibration is counted separately by
+#          the caller, since a partial zip yields two children per merge and a
+#          full merge only one.
+FORWARD_TRAIN_PASSES_PER_MERGE = 3
 #   loner: reset_bn_stats only
 FORWARD_TRAIN_PASSES_PER_LONER = 1
 #   population evaluation: reset_bn_stats per individual

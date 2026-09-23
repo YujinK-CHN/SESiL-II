@@ -10,7 +10,7 @@ things change between runs of an experiment suite:
 
     bash run.sh --dataset cifar100 --budget 500 --seeds 0,1,2
 
-Everything else -- merge operator, selection rule, population shape, all the
+Everything else -- merge operator, certification rule, population shape, all the
 hyper-parameters -- is set by the defaults below. Edit them here. They are still
 exposed as CLI flags so a one-off sweep can override one without editing the
 file, but run.sh does not pass them, so this file is the single source of truth.
@@ -28,6 +28,22 @@ Groups:
 
 import argparse
 import os
+
+
+def optional_int(value):
+    """An int, or None for 'none' / 'null' / '' / a negative number.
+
+    argparse's type=int cannot express "no stop node", so --stop-node could
+    never actually select a full merge from the command line even though the
+    code supports it.
+    """
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in ('none', 'null', ''):
+        return None
+    parsed = int(text)
+    return None if parsed < 0 else parsed
 
 
 # --------------------------------------------------------------------------- #
@@ -117,9 +133,6 @@ def _add_evolution_config(parser):
     group.add_argument('--merger', type=str, default='permute',
                        choices=['zipit', 'permute', 'wavg'],
                        help='Which merge operator crossover uses.')
-    group.add_argument('--selection', type=str, default='bidirectional',
-                       choices=['bidirectional', 'breed', 'guided', 'hard'],
-                       help='Which mate-selection strategy to use.')
     group.add_argument('--individual-budget', type=float, default=0.25,
                        help='Training budget granted to ONE agent in ONE generation, '
                             'in the same epoch-equivalent unit as --budget. Each agent '
@@ -142,8 +155,20 @@ def _add_evolution_config(parser):
 
 def _add_merging_config(parser):
     group = parser.add_argument_group('merging')
-    group.add_argument('--stop-node', type=int, default=21,
-                       help='Partial-zipping depth; None merges the whole network.')
+    group.add_argument('--stop-node', type=optional_int, default=21,
+                       help="Partial-zipping depth: the graph node the merge stops "
+                            "at, beyond which each parent keeps its own head. Pass "
+                            "'none' (or a negative value) to merge the whole network "
+                            "instead. The two modes produce sibling children "
+                            "differently -- see sesil/merge.extract_children.")
+    group.add_argument('--merge-bias', type=float, default=0.7,
+                       help='FULL-MERGE ONLY (--stop-node none). How far each child '
+                            'leans toward its own parent when the merged weights are '
+                            'interpolated. A couple yields one child per parent, so '
+                            'this is what makes them differ. 0.5 makes both children '
+                            'identical; 1.0 makes each child its parent, with none of '
+                            'the merge in it. Ignored when a stop node is set, where '
+                            'the parents\' separate heads supply the asymmetry.')
     group.add_argument('--merge-alpha', type=float, default=0.0001,
                        help="ZipIt! alpha ('a'), Section 4.3 of the ZipIt! paper.")
     group.add_argument('--merge-beta', type=float, default=0.075,
@@ -196,8 +221,6 @@ def _add_selection_config(parser):
                        help='Weight on certified classes both already hold.')
     group.add_argument('--max-retries', type=int, default=100,
                        help='Attempts to find reciprocated pairs before giving up.')
-    group.add_argument('--breed-key', type=str, default='Joint',
-                       help='Fitness field the breed/guided/hard strategies rank on.')
 
 
 def _add_baseline_config(parser):
@@ -265,7 +288,7 @@ def default_population_dir(args):
 def run_dir(args):
     """Root for this run's artefacts, kept separate per method/config/seed."""
     if args.method == 'sesil':
-        leaf = f'{args.merger}_{args.selection}'
+        leaf = args.merger
     else:
         leaf = f'baseline_{args.baseline_mode}'
     return os.path.join(args.output_root, args.exp_name, args.dataset, leaf,
