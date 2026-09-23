@@ -53,11 +53,6 @@ def agent_name(index):
     return f'agent_{index:03d}'
 
 
-def checkpoint_path(population_dir, agent_id, arch, version=0):
-    """Path of one agent's weights."""
-    return os.path.join(population_dir, agent_id, f'{arch}_v{version}.pth.tar')
-
-
 def save_agent(model, population_dir, index, arch, meta=None):
     """Persist one agent: weights plus metadata.
 
@@ -111,8 +106,3 @@ def read_meta(population_dir, agent_id):
         return {}
     with open(path) as f:
         return json.load(f)
-
-
-def inherited_certificate(population_dir, agent_id):
-    """The certificate an agent carried in, as a set. Empty when unknown."""
-    return set(read_meta(population_dir, agent_id).get('certificate', []))
