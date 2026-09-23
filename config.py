@@ -96,6 +96,20 @@ def _add_run_config(parser):
                        help='Root for all run artefacts (checkpoints + csv).')
     group.add_argument('--data-dir', type=str, default='./data',
                        help='Root holding the raw dataset downloads.')
+    group.add_argument('--eval-interval', type=float, default=5.0,
+                       help='Epoch-equivalents between external evaluation points. '
+                            'Evaluation fires on a WATERMARK over spent budget, not '
+                            'every N iterations, so SESiL (which advances in '
+                            'generations) and the baseline (which advances in epochs) '
+                            'land on the same x-values and can be plotted on one axis. '
+                            'See sesil/evaluator.py.')
+    group.add_argument('--val-fraction', type=float, default=0.1,
+                       help='Fraction of the TRAINING set held out for validation. '
+                            'Certification ranks agents on this split, which is what '
+                            'drives mating and licensing -- so it sits inside the '
+                            'optimisation loop. The test set is touched only by the '
+                            'external evaluator, keeping reported accuracy honest. '
+                            'Set to 0 to disable, which reintroduces the bias.')
 
 
 def _add_model_config(parser):

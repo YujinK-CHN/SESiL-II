@@ -1,11 +1,23 @@
 """
-Raw CIFAR loaders.
+Dataset access, and the train / validation / test split.
 
-utils.prepare_data() builds the loaders the merging pipeline needs (splits,
-fractional loaders, class names).  Pretrain and mutation want something simpler:
-plain train/test loaders over the whole dataset, or over a subset of classes.
-That is what lives here, so the dataset path is configured once rather than
-hardcoded in each script.
+utils.prepare_data() builds the loaders the merging pipeline needs. Everything
+supervised goes through here instead, because it has to respect one boundary:
+
+    train   what agents are finetuned on
+    val     what certification ranks agents on -- and therefore what drives
+            mating and what each agent is licensed to train on
+    test    touched ONLY by sesil.evaluator
+
+Validation is carved out of the training set rather than borrowed from test.
+Without that split, certification would rank agents on the test set, putting it
+inside the optimisation loop and making any reported test accuracy
+optimistically biased.
+
+The split is stratified and seeded by --seed, so a SESiL run and a baseline run
+at the same seed see exactly the same training data -- which is what makes a
+budget-matched comparison fair -- while different seeds average over the choice
+of split.
 """
 
 import os
@@ -14,6 +26,7 @@ import numpy as np
 import torch
 import torchvision
 import torchvision.transforms as T
+from sklearn.model_selection import train_test_split
 
 CIFAR_MEAN = [125.307, 122.961, 113.8575]
 CIFAR_STD = [51.5865, 50.847, 51.255]
@@ -56,27 +69,100 @@ def get_datasets(args, download=True):
     return train_dset, test_dset, spec['num_classes']
 
 
-def get_loaders(args, batch_size=None, workers=None, classes=None):
-    """Train/test dataloaders, optionally restricted to `classes`."""
-    batch_size = batch_size or args.pretrain_batch_size
-    workers = workers if workers is not None else args.pretrain_workers
+def train_val_indices(targets, val_fraction, seed):
+    """Stratified split of the training set into train and validation indices.
 
-    train_dset, test_dset, num_classes = get_datasets(args)
+    Stratified so every class is represented in validation -- certification
+    ranks per class, so a class missing from validation could not be certified
+    at all.
+    """
+    indices = np.arange(len(targets))
+    if val_fraction <= 0:
+        return indices, np.array([], dtype=int)
 
-    if classes is not None:
-        train_dset = subset_by_classes(train_dset, classes)
-        test_dset = subset_by_classes(test_dset, classes)
-
-    train_loader = torch.utils.data.DataLoader(
-        train_dset, batch_size=batch_size, shuffle=True, num_workers=workers)
-    test_loader = torch.utils.data.DataLoader(
-        test_dset, batch_size=batch_size, shuffle=False, num_workers=workers)
-
-    return train_loader, test_loader, num_classes
+    train_idx, val_idx = train_test_split(
+        indices,
+        test_size=val_fraction,
+        random_state=seed,
+        stratify=np.asarray(targets),
+    )
+    return np.sort(train_idx), np.sort(val_idx)
 
 
-def subset_by_classes(dataset, classes):
-    """Restrict a CIFAR dataset to the given class ids, labels unchanged."""
-    keep = set(int(c) for c in classes)
-    indices = [i for i, label in enumerate(dataset.targets) if label in keep]
-    return torch.utils.data.Subset(dataset, indices)
+def subset_by_classes(dataset, classes, indices=None):
+    """Restrict a CIFAR dataset to the given class ids, labels unchanged.
+
+    `indices` optionally restricts the candidate pool first, which is how the
+    training split is kept clear of validation samples.
+    """
+    keep = set(int(c) for c in classes) if classes is not None else None
+    targets = dataset.targets
+    pool = range(len(targets)) if indices is None else indices
+    selected = [int(i) for i in pool if keep is None or targets[int(i)] in keep]
+    return torch.utils.data.Subset(dataset, selected)
+
+
+class DataBundle:
+    """Train / validation / test, split once and reused for the whole run."""
+
+    def __init__(self, args, download=True):
+        self.args = args
+        self.train_dset, self.test_dset, self.num_classes = get_datasets(args, download)
+
+        self.train_idx, self.val_idx = train_val_indices(
+            self.train_dset.targets, args.val_fraction, args.seed)
+
+        self.batch_size = args.pretrain_batch_size
+        self.workers = args.pretrain_workers
+
+    # ------------------------------------------------------------------ #
+
+    @property
+    def train_size(self):
+        """Samples an agent could train on. The budget's epoch-equivalent unit.
+
+        Defined on the post-split training set, so one epoch-equivalent means
+        the same amount of work for SESiL and the baseline alike.
+        """
+        return len(self.train_idx)
+
+    @property
+    def val_size(self):
+        return len(self.val_idx)
+
+    @property
+    def test_size(self):
+        return len(self.test_dset)
+
+    # ------------------------------------------------------------------ #
+
+    def _loader(self, dataset, shuffle, batch_size=None):
+        return torch.utils.data.DataLoader(
+            dataset,
+            batch_size=batch_size or self.batch_size,
+            shuffle=shuffle,
+            num_workers=self.workers,
+        )
+
+    def train_loader(self, classes=None, batch_size=None):
+        """Training data, optionally restricted to `classes`. Never sees val."""
+        subset = subset_by_classes(self.train_dset, classes, self.train_idx)
+        return self._loader(subset, shuffle=True, batch_size=batch_size)
+
+    def val_loader(self, batch_size=None):
+        """What certification ranks on. Held out of training, never test."""
+        subset = subset_by_classes(self.train_dset, None, self.val_idx)
+        return self._loader(subset, shuffle=False, batch_size=batch_size)
+
+    def test_loader(self, batch_size=None):
+        """Touched only by sesil.evaluator."""
+        return self._loader(self.test_dset, shuffle=False, batch_size=batch_size)
+
+    def summary(self):
+        return {
+            'train_size': self.train_size,
+            'val_size': self.val_size,
+            'test_size': self.test_size,
+            'val_fraction': self.args.val_fraction,
+            'split_seed': self.args.seed,
+        }

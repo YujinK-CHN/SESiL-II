@@ -26,7 +26,6 @@ from sklearn.model_selection import train_test_split
 
 from utils import train_logits
 
-from sesil.data import get_datasets, subset_by_classes
 from sesil.population import list_population, save_agent
 
 
@@ -43,7 +42,7 @@ def build_model(args, num_classes):
     )
 
 
-def ensure_population(args, budget=None):
+def ensure_population(args, data, budget=None):
     """Create the initial population if it is not already on disk.
 
     Returns the list of model ids making up generation 0.
@@ -69,14 +68,15 @@ def ensure_population(args, budget=None):
         return existing
 
     print(f'[pretrain] Building a population of {args.pop_size} into {args.population_dir}')
-    return pretrain_population(args, budget)
+    return pretrain_population(args, data, budget)
 
 
-def pretrain_population(args, budget=None):
+def pretrain_population(args, data, budget=None):
     """Train --pop-size individuals, each on its own random class subset."""
     os.makedirs(args.population_dir, exist_ok=True)
 
-    train_dset, test_dset, num_classes = get_datasets(args)
+    num_classes = data.num_classes
+    val_loader = data.val_loader()
 
     start = time.time()
     for individual in range(args.pop_size):
@@ -87,14 +87,7 @@ def pretrain_population(args, budget=None):
         )
         split = sorted(int(c) for c in split)
 
-        train_loader = torch.utils.data.DataLoader(
-            subset_by_classes(train_dset, split),
-            batch_size=args.pretrain_batch_size, shuffle=True,
-            num_workers=args.pretrain_workers)
-        test_loader = torch.utils.data.DataLoader(
-            subset_by_classes(test_dset, split),
-            batch_size=args.pretrain_batch_size, shuffle=False,
-            num_workers=args.pretrain_workers)
+        train_loader = data.train_loader(classes=split)
 
         n_samples = len(train_loader.dataset)
         if budget is not None:
@@ -108,7 +101,7 @@ def pretrain_population(args, budget=None):
         model, final_acc = train_logits(
             model=model,
             train_loader=train_loader,
-            test_loader=test_loader,
+            test_loader=val_loader,
             epochs=args.pretrain_epochs,
         )
         print(f'[pretrain] accuracy on {split}: {final_acc}')

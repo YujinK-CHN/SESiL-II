@@ -158,15 +158,20 @@ def extract_children(merge, config, args, num_classes, train_loader):
     return children
 
 
-def merge_couple(pair, raw_config, args):
+def merge_couple(pair, raw_config, args, train_loader=None):
     """Merge one couple. Returns (merge, config).
 
     The caller extracts children from the result -- one merge serves both.
+
+    `train_loader` should be the post-split training loader. Alignment metrics
+    and BN recalibration read inputs only, never labels, but keeping validation
+    samples out of them entirely is cheaper than having to argue the point.
     """
     point_at(raw_config, pair)
     config = prepare_experiment_config(raw_config)
 
-    train_loader = config['data']['train']['full']
+    if train_loader is None:
+        train_loader = config['data']['train']['full']
     base_models = [reset_bn_stats(base_model, train_loader)
                    for base_model in config['models']['bases']]
 

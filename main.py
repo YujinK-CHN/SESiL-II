@@ -7,8 +7,10 @@ Single entry point for every method.
 Normally invoked through run.sh / run_sesil.sh / run_baseline.sh.
 
 --budget is in epoch-equivalents (one backprop pass over the full training
-set), which is the unit that makes SESiL and the baseline comparable. Both
-runs above are given exactly the same amount of training compute.
+set), which is the unit that makes SESiL and the baseline comparable. Both runs
+above get exactly the same training compute, the same train/validation split,
+and evaluation at the same budget watermarks -- so their curves can be plotted
+on one axis without any post-hoc alignment.
 
 For --method sesil this runs the whole pipeline: it creates the initial
 population if one does not already exist, then evolves it until the budget is
@@ -29,18 +31,9 @@ from sesil.budget import (
     estimate_pretrain_cost,
     samples_for,
 )
-
-
-def _make_budget(args):
-    """Build the ledger, sized by the actual dataset."""
-    from sesil.data import get_datasets
-
-    train_dset, test_dset, _ = get_datasets(args, download=True)
-    return BudgetTracker(
-        total=args.budget,
-        train_set_size=len(train_dset),
-        test_set_size=len(test_dset),
-    )
+from sesil.data import DataBundle
+from sesil.evaluator import Evaluator
+from sesil.logging import RunLogger
 
 
 def main(argv=None):
@@ -48,34 +41,81 @@ def main(argv=None):
 
     set_seed(args.seed)
 
-    budget = _make_budget(args)
+    # One split for the whole run: train for finetuning, validation for
+    # certification, test for the evaluator alone.
+    data = DataBundle(args)
 
+    # The budget's unit is an epoch over the TRAINABLE set, so it means the
+    # same amount of work whatever --val-fraction is.
+    budget = BudgetTracker(
+        total=args.budget,
+        train_set_size=data.train_size,
+        test_set_size=data.test_size,
+    )
+
+    os.makedirs(args.run_dir, exist_ok=True)
+    logger = RunLogger(args.run_dir)
+
+    evaluator = Evaluator(
+        test_loader=data.test_loader(),
+        num_classes=args.num_classes,
+        eval_interval=args.eval_interval,
+        logger=logger,
+        budget=budget,
+        meta={'method': args.method, 'seed': args.seed, 'dataset': args.dataset,
+              'merger': args.merger if args.method == 'sesil' else None},
+    )
+
+    _print_banner(args, data, budget)
+
+    try:
+        if args.method == 'sesil':
+            result = _run_sesil(args, budget, data, logger, evaluator)
+        elif args.method == 'baseline':
+            from sesil.baseline import run_baseline
+            result = run_baseline(args, budget, data, logger, evaluator)
+        else:
+            raise ValueError(f'Unknown method {args.method!r}')
+    finally:
+        # Written whatever happens, so a crashed run still records what it spent.
+        with open(os.path.join(args.run_dir, 'config.json'), 'w') as f:
+            json.dump({'config': vars(args),
+                       'data': data.summary(),
+                       'budget': budget.summary()},
+                      f, indent=2, default=str)
+        logger.close()
+
+    return result
+
+
+def _print_banner(args, data, budget):
     print('=' * 70)
     print(f'method     : {args.method}')
     print(f'seed       : {args.seed}')
     print(f'device     : {args.device}')
-    print(f'dataset    : {args.dataset} ({args.num_classes} classes, '
-          f'{budget.train_set_size} train samples)')
+    print(f'dataset    : {args.dataset} ({args.num_classes} classes)')
+    print(f'  split    : {data.train_size} train / {data.val_size} val / '
+          f'{data.test_size} test')
+    print(f'             certification ranks on VAL; only the evaluator sees TEST')
     print(f'model      : {args.arch}')
     print(f'run dir    : {args.run_dir}')
     print(f'budget     : {args.budget} epoch-equivalents '
-          f'(1 = one backprop pass over the full training set)')
+          f'(1 = one backprop pass over {data.train_size} samples)')
+    print(f'eval every : {args.eval_interval} epoch-equivalents '
+          f'(~{int(args.budget / max(args.eval_interval, 1e-9)) + 1} points)')
 
     if args.method == 'sesil':
         pre = estimate_pretrain_cost(args)
         per_gen = estimate_generation_cost(args)
         gens = estimate_generations(args)
         per_agent = samples_for(args.individual_budget, budget.train_set_size)
-        print(f'merger     : {args.merger}'
-              f"  (stop-node {args.stop_node if args.stop_node is not None else 'none / full merge'})")
+        stop = args.stop_node if args.stop_node is not None else 'none / full merge'
+        print(f'merger     : {args.merger}  (stop-node {stop})')
         print(f'population : {args.pop_size} x {args.classes_per_model} classes')
-        print(f'  pretrain        {pre:.2f} epoch-equiv '
-              f'({args.pop_size} agents x {args.pretrain_epochs} epochs on '
-              f'{args.classes_per_model}/{args.num_classes} of the data)')
+        print(f'  pretrain        {pre:.2f} epoch-equiv')
         print(f'  per agent/gen   {args.individual_budget:.3f} epoch-equiv '
               f'= {per_agent} sample-presentations')
-        print(f'  per generation  {per_gen:.2f} epoch-equiv '
-              f'({args.pop_size} agents)')
+        print(f'  per generation  {per_gen:.2f} epoch-equiv ({args.pop_size} agents)')
         print(f'  -> {gens} generations from a budget of {args.budget:g}')
         print(f'population dir: {args.population_dir}')
     else:
@@ -83,32 +123,15 @@ def main(argv=None):
         print(f'  -> {args.baseline_epochs} epochs')
     print('=' * 70)
 
-    os.makedirs(args.run_dir, exist_ok=True)
 
-    if args.method == 'sesil':
-        result = _run_sesil(args, budget)
-    elif args.method == 'baseline':
-        from sesil.baseline import run_baseline
-        result = run_baseline(args, budget)
-    else:
-        raise ValueError(f'Unknown method {args.method!r}')
-
-    # Written at the end so the accounting reflects what was actually spent.
-    with open(os.path.join(args.run_dir, 'config.json'), 'w') as f:
-        json.dump({'config': vars(args), 'budget': budget.summary()},
-                  f, indent=2, default=str)
-
-    return result
-
-
-def _run_sesil(args, budget):
+def _run_sesil(args, budget, data, logger, evaluator):
     from sesil.evolution import run_evolution
     from sesil.pretrain import ensure_population
 
     # Stage 1: pretrain. Skipped when a population is already on disk, unless
     # --force-pretrain. This is what used to be a manual copy step.
     if args.start_gen == 0:
-        population = ensure_population(args, budget)
+        population = ensure_population(args, data, budget)
         if not population:
             raise RuntimeError(f'Pretrain produced no individuals in {args.population_dir}')
     else:
@@ -120,7 +143,7 @@ def _run_sesil(args, budget):
         return None
 
     # Stage 2: evolution, until the budget runs out.
-    return run_evolution(args, budget)
+    return run_evolution(args, budget, data, logger, evaluator)
 
 
 if __name__ == '__main__':
