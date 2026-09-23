@@ -56,10 +56,14 @@ def _add_run_config(parser):
     group.add_argument('--dataset', type=str, default='cifar10',
                        choices=sorted(DATASET_PRESETS.keys()),
                        help='Which environment to run in.')
-    group.add_argument('--budget', type=int, default=25,
-                       help='Total training budget. For --method sesil this is '
-                            'the number of generations; for --method baseline '
-                            'it is the number of epochs.')
+    group.add_argument('--budget', type=float, default=100,
+                       help='Total training budget, in EPOCH-EQUIVALENTS: one unit '
+                            'is a single backprop pass over the full training set. '
+                            'This is the common currency that makes SESiL and the '
+                            'baseline comparable -- see sesil/budget.py. For the '
+                            'baseline it is simply the epoch count; for SESiL it is '
+                            'spent on pretrain plus per-generation mutation, and the '
+                            'run stops when it is exhausted.')
     group.add_argument('--seed', type=int, default=0,
                        help='Random seed for torch/numpy/random.')
 
@@ -122,6 +126,10 @@ def _add_evolution_config(parser):
     group.add_argument('--start-gen', type=int, default=0,
                        help='Resume from this generation. 0 starts from the initial '
                             'population; N>0 reads generation N from the run folder.')
+    group.add_argument('--max-generations', type=int, default=1000,
+                       help='Safety cap. The real stopping condition is --budget; '
+                            'this only prevents an unbounded loop if the per-generation '
+                            'cost is tiny.')
 
 
 def _add_merging_config(parser):
@@ -259,9 +267,15 @@ def resolve(args):
     args.num_classes = DATASET_PRESETS[args.dataset]['num_classes']
     args.arch = arch_name(args)
 
-    # One budget knob, spent differently by each method.
-    args.generations = args.budget       # SESiL: generations
-    args.baseline_epochs = args.budget   # baseline: epochs
+    # One budget knob, in epoch-equivalents (see sesil/budget.py).
+    #
+    # For the baseline the conversion is the identity: one epoch over the full
+    # training set IS one epoch-equivalent.
+    #
+    # For SESiL there is no fixed generation count -- each generation costs a
+    # different amount depending on how many labels the population covers, so
+    # the loop spends the budget and stops when it runs out.
+    args.baseline_epochs = int(args.budget)
 
     if args.population_dir is None:
         args.population_dir = default_population_dir(args)

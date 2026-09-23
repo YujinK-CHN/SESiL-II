@@ -5,26 +5,34 @@
 # Three knobs, because only three things change between runs of a suite:
 #
 #   --dataset   which environment   (cifar10 | cifar100)
-#   --budget    training budget     (generations for sesil, epochs for baseline)
+#   --budget    training budget in EPOCH-EQUIVALENTS -- one unit is a single
+#               backprop pass over the full training set. This is the common
+#               currency that makes SESiL and the baseline comparable: at the
+#               same --budget both methods get the same training compute.
+#               SESiL spends it on pretrain + per-generation mutation and stops
+#               when it runs out; the baseline spends it as epochs.
 #   --seeds     comma-separated seeds
 #
 # Everything else -- merger, selection, population shape, hyper-parameters --
 # lives in config.py. Edit it there.
 #
 # Usage:
-#   bash run.sh --dataset cifar10  --budget 25 --seeds 0
-#   bash run.sh --dataset cifar100 --budget 40 --seeds 0,1,2
-#   bash run.sh --dataset cifar10  --budget 100 --seeds 0 --method baseline
+#   bash run.sh --dataset cifar10  --budget 500 --seeds 0
+#   bash run.sh --dataset cifar100 --budget 500 --seeds 0,1,2
+#
+#   # same compute, for a fair comparison:
+#   bash run.sh --dataset cifar10 --budget 500 --seeds 0 --method sesil
+#   bash run.sh --dataset cifar10 --budget 500 --seeds 0 --method baseline
 #
 # Any unrecognised flag is passed through to config.py, so a one-off override is
 # still possible without editing anything:
-#   bash run.sh --dataset cifar10 --budget 25 --seeds 0 --merger zipit
+#   bash run.sh --dataset cifar10 --budget 500 --seeds 0 --merger zipit
 
 set -euo pipefail
 
 # ───────────────────────── the three knobs ──────────────────────────
 DATASET="cifar10"
-BUDGET=25
+BUDGET=500
 SEEDS="0"
 
 # ───────────────────────── run control ──────────────────────────────

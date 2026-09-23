@@ -38,10 +38,16 @@ def build_model(args, num_classes):
     )
 
 
-def ensure_population(args):
+def ensure_population(args, budget=None):
     """Create the initial population if it is not already on disk.
 
     Returns the list of model ids making up generation 0.
+
+    When a population is reused rather than trained, nothing is charged to the
+    budget -- the compute was spent by whichever run created it. That makes
+    reuse across seeds cheaper but means the budget figures of two runs are
+    only comparable when both trained their own population, so the reuse is
+    reported loudly.
     """
     existing = list_population(args.population_dir)
 
@@ -52,13 +58,16 @@ def ensure_population(args):
             print(f'[pretrain] NOTE: --pop-size is {args.pop_size} but the existing '
                   f'population has {len(existing)} members. Using what is on disk. '
                   f'Pass --force-pretrain to rebuild it.')
+        print('[pretrain] NOTE: reused population is NOT charged to this run\'s '
+              'budget. For a like-for-like budget comparison, use --force-pretrain '
+              'or a fresh --population-dir.')
         return existing
 
     print(f'[pretrain] Building a population of {args.pop_size} into {args.population_dir}')
-    return pretrain_population(args)
+    return pretrain_population(args, budget)
 
 
-def pretrain_population(args):
+def pretrain_population(args, budget=None):
     """Train --pop-size individuals, each on its own random class subset."""
     os.makedirs(args.population_dir, exist_ok=True)
 
@@ -82,7 +91,13 @@ def pretrain_population(args):
             batch_size=args.pretrain_batch_size, shuffle=False,
             num_workers=args.pretrain_workers)
 
-        print(f'[pretrain] {individual + 1}/{args.pop_size} on classes {split}')
+        n_samples = len(train_loader.dataset)
+        if budget is not None:
+            cost = budget.spend_samples('pretrain', n_samples, epochs=args.pretrain_epochs)
+            print(f'[pretrain] {individual + 1}/{args.pop_size} on classes {split}  '
+                  f'{n_samples} samples  cost={cost:.3f} epoch-equiv')
+        else:
+            print(f'[pretrain] {individual + 1}/{args.pop_size} on classes {split}')
 
         model = build_model(args, num_classes).train()
         model, final_acc = train_logits(
