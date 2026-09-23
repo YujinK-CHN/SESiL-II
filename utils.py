@@ -18,7 +18,6 @@ from fvcore.nn.flop_count import flop_count
 from inspect import getmembers, isfunction
 from metric_calculators import get_metric_fns
 import torch.nn.functional as F
-import clip
 import einops
 import torch
 import scipy
@@ -922,6 +921,10 @@ def get_device(model):
 
 def load_clip_features(class_names, device):
     """Create CLIP target labels for class names. Return a normalized tensor of shape (num_classes, 512)."""
+    # Imported here rather than at module level so that CLIP stays an optional
+    # dependency -- it is only needed for eval_type 'clip'.
+    import clip
+
     text_inputs = torch.cat([clip.tokenize(f"a photo of a {c}") for c in class_names]).to(device)
     model, preprocess = clip.load('ViT-B/32', device)
     with torch.no_grad():

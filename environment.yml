@@ -1,0 +1,30 @@
+# Conda environment for SESiL-II.
+#
+#   conda env create -f environment.yml
+#   conda activate sesil
+#
+# Deliberately minimal: conda provides only the interpreter, and everything
+# else comes from pip. Mixing conda-forge and pip for the same scientific
+# packages is the usual source of hard-to-debug ABI breakage in research
+# environments, so this file keeps the two layers separate.
+#
+# The pytorch line below is CUDA 12.1. Change the index URL to match your
+# driver (cu118, cu124, ...), or drop it entirely for a CPU-only install:
+#   https://pytorch.org/get-started/locally/
+#
+# Python 3.10 matches the interpreter this codebase has been run under.
+
+name: sesil
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.10
+  - pip
+
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - torch
+      - torchvision
+      - -r requirements.txt

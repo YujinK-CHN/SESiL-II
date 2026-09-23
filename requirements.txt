@@ -1,11 +1,44 @@
+# SESiL-II dependencies.
+#
+# torch / torchvision are deliberately NOT listed here: the right build depends
+# on your CUDA version, so install them first from the PyTorch index (see the
+# conda setup in environment.yml or the commands below).
+#
+#   conda create -n sesil python=3.10 -y && conda activate sesil
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#   pip install -r requirements.txt
+
+# --- core numerics -----------------------------------------------------------
+numpy
+scipy
 tqdm
-matplotlib
-pandas
-pyyaml
-scikit-learn
-fvcore
-einops
-networkx
-timm
-pygraphviz
-clip @ git+https://github.com/openai/CLIP.git@d50d76daa670286dd6cacf3bcd80b5e4823fc8e1
+
+# --- model merging (inherited from ZipIt!) -----------------------------------
+networkx          # computation-graph representation   graphs/base_graph.py
+fvcore            # FLOP counting                      model_merger.py
+scikit-learn      # clustering in matching_functions, split sampling in pretrain
+einops            # tensor reshaping                   utils.vector_gather
+matplotlib        # graph visualisation                graphs/base_graph.py:222
+pyyaml            # utils.read_yaml
+
+# --- required by the dataset layer -------------------------------------------
+# datasets/configs.py imports ALL the non-CIFAR loaders at module level, so
+# these are pulled in even on a pure CIFAR run. They are not optional unless
+# those top-level imports are made lazy.
+pandas            # caltech101, cub, nabird, oxford_pets, stanford_dogs
+Pillow            # same
+timm              # datasets/imagenet.py (normalisation constants)
+
+# --- optional ----------------------------------------------------------------
+# CLIP-head evaluation (--eval-type clip). The import in utils.load_clip_features
+# is lazy, so install this only if you actually use that eval path:
+#   pip install git+https://github.com/openai/CLIP.git@d50d76daa670286dd6cacf3bcd80b5e4823fc8e1
+#
+# FFCV ImageNet loaders (datasets/imagenet.py fast path and the standalone
+# datasets/imagenet_pytorch_to_ffcv.py converter). Both are lazy or standalone,
+# so install per FFCV's own instructions only if you move to ImageNet.
+#
+# Removed from this file: pygraphviz -- nothing in the codebase imports it.
+# graphs/base_graph.py:208 calls nx.nx_agraph.graphviz_layout(), which needs it
+# at runtime, but only inside the graph-drawing helper that the pipeline never
+# calls. Install it yourself if you want to draw architecture graphs.
