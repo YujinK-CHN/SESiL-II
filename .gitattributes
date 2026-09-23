@@ -1,2 +1,18 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# This working tree is used from both Windows and WSL against the same files
+# (/mnt/c/...), so line endings must be LF on disk, not "native".
+#
+# `* text=auto` alone normalises to LF *in the repository* but checks out CRLF
+# on Windows, which makes every shell script fail under WSL bash with
+#   run.sh: line 30: $'\r': command not found
+# because the \r becomes part of the command. Pinning eol=lf keeps the working
+# tree LF on every platform.
+
+* text=auto eol=lf
+
+# Binary: never touch these.
+*.png   binary
+*.jpg   binary
+*.npy   binary
+*.pth   binary
+*.tar   binary
+*.gz    binary
