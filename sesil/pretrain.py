@@ -7,9 +7,8 @@ Pretrain: create the initial population, in two phases.
               finetune it on its own random class subset -- using the same
               routine mutation uses in the evolution stage.
 
---phase-a-ratio splits --pretrain-budget between them; --phase-a-ratio 0.0
-skips phase A and reproduces the older behaviour of training every agent from
-scratch.
+--pretrain-mode none skips phase A and trains every agent from scratch on its
+own subset, which is the original SESiL scheme.
 
 Why the shared backbone matters beyond feature quality: two networks trained
 from *different* random initialisations occupy unrelated bases, so aligning
@@ -18,14 +17,22 @@ either parent. Agents finetuned from a *common* backbone stay in the same loss
 basin, alignment is close to identity, and crossover keeps far more of what
 each parent knew.
 
-Each agent is saved as
+**Every run pretrains.** Nothing is loaded from a previous run implicitly.
+Caching a population looked like a saving but bought only wall-clock -- reuse
+was charged at its recorded cost anyway -- while costing a per-agent cost
+ledger, a staleness fallback, and shared directories that concurrent seeds
+raced on. Fresh pretrain per run is also the *correct* default for independent
+seeds: error bands should cover phase A, not hold it fixed.
 
-    <population dir>/agent_NNN/<arch>_v0.pth.tar
-    <population dir>/agent_NNN/agent.json
+Everything a run produces therefore lives under its own run directory:
 
-The class subset it saw is stored as provenance, not identity. Generation 0 is
-evaluated across the whole label space like every later generation and earns
-its proficiency certificate from that measurement.
+    <run dir>/backbone/<arch>.pth.tar       phase A output (ssl mode only)
+    <run dir>/checkpoints/gen_0/agent_NNN/  the initial population
+    <run dir>/checkpoints/gen_N/agent_NNN/  later generations
+
+The one deliberate exception is --backbone-path, which lets a baseline run load
+the backbone a SESiL run produced so the two start from identical weights. That
+sharing is explicit and one-directional; nothing is ever picked up by accident.
 """
 
 import json
@@ -37,7 +44,7 @@ import torch
 from sklearn.model_selection import train_test_split
 
 from sesil.mutation import mutate
-from sesil.population import list_population, read_meta, save_agent
+from sesil.population import list_population, save_agent
 from sesil.ssl import (
     get_objective,
     reset_classifier,
@@ -70,8 +77,7 @@ def phase_budgets(args):
     """(phase_a, phase_b) epoch-equivalents, from --pretrain-budget.
 
     In --pretrain-mode none there is no phase A: the whole budget goes to
-    training each agent from scratch on its own subset, which is the original
-    SESiL scheme, kept available as a baseline.
+    training each agent from scratch on its own subset.
     """
     if args.pretrain_mode != 'ssl' or args.phase_a_ratio <= 0:
         return 0.0, float(args.pretrain_budget)
@@ -92,56 +98,25 @@ def cost_multiplier(args):
 
 
 def backbone_dir(args):
-    """Where the phase-A backbone is cached.
-
-    Derived from the population directory, which is seed-scoped -- so every
-    seed builds and caches its own backbone and concurrent runs never write to
-    the same file. Pass --backbone-path to share one deliberately, and build it
-    once (`--pretrain-only`) before launching the rest rather than racing.
-    """
-    if args.backbone_path:
-        return args.backbone_path
-    tag = args.phase_a_method
-    if tag == 'cluster':
-        # Two cluster backbones with different k are different backbones; without
-        # this they would silently share one cache entry.
-        k = args.cluster_k or args.num_classes
-        tag = f'{tag}_k{k}_r{args.cluster_rounds}'
-    return os.path.join(os.path.dirname(os.path.normpath(args.population_dir)),
-                        f'backbone_{tag}')
+    """Where this run writes its phase-A backbone: inside its own run dir."""
+    return os.path.join(args.run_dir, 'backbone')
 
 
 # --------------------------------------------------------------------------- #
 # Phase A
 # --------------------------------------------------------------------------- #
 
-def ensure_backbone(args, data, budget, logger=None):
-    """Train the shared backbone, or load and charge for a cached one.
+def train_backbone(args, data, budget, logger=None):
+    """Train the shared backbone for this run.
 
-    Returns (state_dict or None, cost). None means phase A was skipped, and
-    agents will be built from random initialisations.
+    Always trains -- there is no cache to consult. Returns (state_dict, cost);
+    (None, 0.0) when phase A is not in play.
     """
     phase_a, _ = phase_budgets(args)
     if phase_a <= 0:
         print(f'[phase A] skipped (--pretrain-mode {args.pretrain_mode}); '
               f'agents will start from random initialisations.')
         return None, 0.0
-
-    path = backbone_dir(args)
-    weights = os.path.join(path, f'{args.arch}.pth.tar')
-    meta_path = os.path.join(path, BACKBONE_META)
-
-    if os.path.exists(weights) and not args.force_pretrain:
-        recorded = {}
-        if os.path.exists(meta_path):
-            with open(meta_path) as f:
-                recorded = json.load(f)
-        cost = float(recorded.get('cost', phase_a))
-        print(f'[phase A] reusing cached backbone from {path}')
-        print(f'[phase A] charged at its recorded creation cost: '
-              f'{cost:.2f} epoch-equiv')
-        budget.spend_samples('phase_a', budget.train_set_size * cost, epochs=1)
-        return torch.load(weights, map_location=args.device), cost
 
     # Each image costs `multiplier` epoch-equivalents, so the budget buys
     # proportionally fewer images than a supervised pass would.
@@ -162,19 +137,23 @@ def ensure_backbone(args, data, budget, logger=None):
     cost = (sample_budget * multiplier) / max(budget.train_set_size, 1)
     budget.spend_samples('phase_a', budget.train_set_size * cost, epochs=1)
 
+    # Written so a baseline run can start from the same weights via
+    # --backbone-path. Nothing in this run reads it back.
+    path = backbone_dir(args)
     os.makedirs(path, exist_ok=True)
     state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
-    torch.save(state, weights)
-    with open(meta_path, 'w') as f:
+    torch.save(state, os.path.join(path, f'{args.arch}.pth.tar'))
+    with open(os.path.join(path, BACKBONE_META), 'w') as f:
         json.dump({'cost': round(cost, 6),
                    'method': args.phase_a_method,
                    'multiplier': multiplier,
                    'uses_labels': labelled,
                    'arch': args.arch,
+                   'seed': args.seed,
                    **info}, f, indent=2)
 
     print(f'[phase A] done: {info}')
-    print(f'[phase A] backbone -> {weights}  (cost {cost:.2f} epoch-equiv)')
+    print(f'[phase A] backbone -> {path}  (cost {cost:.2f} epoch-equiv)')
     if logger is not None:
         logger.log_train({'stage': 'phase_a', 'budget': round(budget.spent, 4),
                           'cost': round(cost, 6), **info})
@@ -182,20 +161,20 @@ def ensure_backbone(args, data, budget, logger=None):
     return state, cost
 
 
-def load_backbone(args):
-    """The cached backbone state dict, or None. Used by the baseline too."""
-    weights = os.path.join(backbone_dir(args), f'{args.arch}.pth.tar')
+def load_backbone(path, arch, device):
+    """Load a backbone another run produced. Used only by --baseline-init backbone."""
+    weights = os.path.join(path, f'{arch}.pth.tar')
     if not os.path.exists(weights):
         return None
-    return torch.load(weights, map_location=args.device)
+    return torch.load(weights, map_location=device)
 
 
-def backbone_cost(args):
-    """What the cached backbone cost to build, for charging a reuser."""
-    meta_path = os.path.join(backbone_dir(args), BACKBONE_META)
-    if not os.path.exists(meta_path):
+def backbone_cost(path):
+    """What that backbone cost to build, so a run loading it can be charged."""
+    meta = os.path.join(path, BACKBONE_META)
+    if not os.path.exists(meta):
         return None
-    with open(meta_path) as f:
+    with open(meta) as f:
         return float(json.load(f).get('cost', 0.0))
 
 
@@ -203,84 +182,29 @@ def backbone_cost(args):
 # Phase B
 # --------------------------------------------------------------------------- #
 
-def ensure_population(args, data, budget=None, logger=None):
-    """Create the initial population if it is not already on disk.
+def build_population(args, data, budget, logger=None):
+    """Phase A then phase B: one backbone, then --pop-size specialists.
 
-    Returns the agent ids making up generation 0.
-
-    A reused population is still CHARGED, at what it originally cost to build.
-    Reuse saves wall-clock, not budget: letting SESiL inherit a population for
-    free while the baseline starts from random init would quietly unmatch a
-    budget-matched comparison.
+    Writes generation 0 into this run's own directory. Always runs; there is no
+    population to inherit.
     """
-    existing = list_population(args.population_dir)
-
-    if existing and not args.force_pretrain:
-        print(f'[pretrain] Found {len(existing)} agents in {args.population_dir}; '
-              f'skipping pretrain.')
-        if len(existing) != args.pop_size:
-            print(f'[pretrain] NOTE: --pop-size is {args.pop_size} but the existing '
-                  f'population has {len(existing)} members. Using what is on disk. '
-                  f'Pass --force-pretrain to rebuild it.')
-        _charge_reused_population(args, existing, budget)
-        return existing
-
-    print(f'[pretrain] Building a population of {args.pop_size} into {args.population_dir}')
-    return pretrain_population(args, data, budget, logger)
-
-
-def _charge_reused_population(args, agent_ids, budget):
-    """Charge a reused population at what it originally cost to create.
-
-    The price is read from each agent's own metadata rather than recomputed, so
-    it stays correct even if the pretrain settings have changed since. Phase A
-    is included, because the recorded per-agent cost carries its share.
-    """
-    if budget is None:
-        return 0.0
-
-    recorded = [read_meta(args.population_dir, a).get('pretrain_cost')
-                for a in agent_ids]
-
-    if any(c is None for c in recorded):
-        total = float(args.pretrain_budget)
-        print(f'[pretrain] WARNING: this population records no creation cost '
-              f'(built before costs were tracked). Falling back to '
-              f'--pretrain-budget = {total:.2f} epoch-equiv, which is wrong if the '
-              f'settings differ from the ones that built it. Rebuild with '
-              f'--force-pretrain for exact accounting.')
-    else:
-        total = float(sum(recorded))
-        print(f'[pretrain] Reused population charged at its recorded creation '
-              f'cost: {total:.2f} epoch-equiv.')
-
-    budget.spend_samples('pretrain', budget.train_set_size * total, epochs=1)
-    return total
-
-
-def pretrain_population(args, data, budget=None, logger=None):
-    """Phase A then phase B: one backbone, then --pop-size specialists."""
-    os.makedirs(args.population_dir, exist_ok=True)
+    population_dir = args.population_dir
+    os.makedirs(population_dir, exist_ok=True)
 
     phase_a, phase_b = phase_budgets(args)
-    backbone, backbone_cost_ = ensure_backbone(args, data, budget, logger)
+    backbone, _backbone_cost = train_backbone(args, data, budget, logger)
 
     per_agent = phase_b / max(args.pop_size, 1)
-    sample_budget = int(round(per_agent * budget.train_set_size)) if budget else 0
-
-    # Phase A was paid once but benefits every agent, so its share is recorded
-    # per agent -- that way a later run reusing this population is charged for
-    # the backbone too, not just the finetuning.
-    backbone_share = (backbone_cost_ or 0.0) / max(args.pop_size, 1)
+    sample_budget = int(round(per_agent * budget.train_set_size))
 
     # In mode 'none' there is no phase A, so calling this "phase B" in the log
     # would be misleading -- it is simply the whole pretrain stage.
     label = 'phase B' if backbone is not None else 'pretrain'
+    origin = 'the shared backbone' if backbone is not None else 'scratch'
 
     print(f'[{label}] {args.pop_size} agents x {per_agent:.3f} epoch-equiv '
           f'= {sample_budget} presentations each, on {args.classes_per_model} '
-          f'of {data.num_classes} classes'
-          f'{" from the shared backbone" if backbone is not None else " from scratch"}')
+          f'of {data.num_classes} classes, from {origin}')
 
     val_loader = data.val_loader()
     start = time.time()
@@ -303,8 +227,7 @@ def pretrain_population(args, data, budget=None, logger=None):
         train_loader = data.train_loader(classes=split)
         n_available = len(train_loader.dataset)
 
-        if budget is not None:
-            budget.spend_samples('phase_b', sample_budget, epochs=1)
+        budget.spend_samples('phase_b', sample_budget, epochs=1)
 
         print(f'[{label}] {individual + 1}/{args.pop_size} on classes {split}  '
               f'{sample_budget} presentations over {n_available} samples')
@@ -317,18 +240,16 @@ def pretrain_population(args, data, budget=None, logger=None):
             'generation': 0,
             'certificate': [],          # granted at the first evaluation
             'trained_on': split,
-            'pretrain_subset': split,
-            # What a later run pays to reuse this agent: its own phase-B share
-            # plus its slice of the shared backbone.
-            'pretrain_cost': round(per_agent + backbone_share, 6),
+            'pretrain_subset': split,   # provenance, not identity
             'pretrain_mode': args.pretrain_mode,
             'phase_a_method': args.phase_a_method if backbone is not None else None,
             'parents': [],
+            'head': None,
             'is_loner': False,
         }
-        save_path = save_agent(model, args.population_dir, individual, args.arch, meta)
+        save_path = save_agent(model, population_dir, individual, args.arch, meta)
         print(f'[{label}] saved -> {save_path}')
 
     print(f'[pretrain] done in {time.time() - start:.1f}s  '
           f'(phase A {phase_a:.2f} + phase B {phase_b:.2f} epoch-equiv)')
-    return list_population(args.population_dir)
+    return list_population(population_dir)

@@ -106,18 +106,26 @@ def _init_model(args, num_classes, budget):
     if args.baseline_init != 'backbone':
         return model.train()
 
-    state = load_backbone(args)
+    if not args.backbone_path:
+        raise SystemExit(
+            '--baseline-init backbone needs --backbone-path pointing at a '
+            'backbone a SESiL run produced, e.g.\n'
+            '  --backbone-path results/<exp>/<dataset>/<merger>/seed0/backbone\n'
+            'Nothing is discovered implicitly: the comparison only means '
+            'something if you name the backbone you intend to share.')
+
+    state = load_backbone(args.backbone_path, args.arch, args.device)
     if state is None:
         raise SystemExit(
-            '--baseline-init backbone, but no phase-A backbone is cached.\n'
-            'Run the SESiL side first (or `--method sesil --pretrain-only`) so '
-            'the backbone exists, then point this run at the same '
-            '--population-dir / --backbone-path.')
+            f'No {args.arch} backbone at {args.backbone_path!r}.\n'
+            f'Run the SESiL side first (--method sesil --pretrain-mode ssl, '
+            f'optionally --pretrain-only) and point --backbone-path at its '
+            f'<run dir>/backbone.')
 
     model.load_state_dict(state, strict=False)
     reset_classifier(model)
 
-    cost = backbone_cost(args)
+    cost = backbone_cost(args.backbone_path)
     if cost and budget is not None:
         budget.spend_samples('phase_a', budget.train_set_size * cost, epochs=1)
         print(f'[baseline] initialised from the phase-A backbone, '

@@ -138,7 +138,6 @@ def _print_banner(args, data, budget):
               f'= {per_agent} sample-presentations')
         print(f'  per generation  {per_gen:.2f} epoch-equiv ({args.pop_size} agents)')
         print(f'  -> {gens} generations from a budget of {args.budget:g}')
-        print(f'population dir: {args.population_dir}')
     else:
         print(f'mode       : {args.baseline_mode}')
         print(f'  -> {args.baseline_epochs} epochs')
@@ -147,17 +146,16 @@ def _print_banner(args, data, budget):
 
 def _run_sesil(args, budget, data, logger, evaluator):
     from sesil.evolution import run_evolution
-    from sesil.pretrain import ensure_population
+    from sesil.pretrain import build_population
 
-    # Stage 1: pretrain. Skipped when a population is already on disk, unless
-    # --force-pretrain. This is what used to be a manual copy step.
+    # Stage 1: pretrain. Always runs -- nothing is inherited from a previous
+    # run, so every run's numbers describe only itself.
     if args.start_gen == 0:
-        population = ensure_population(args, data, budget, logger)
+        population = build_population(args, data, budget, logger)
         if not population:
             raise RuntimeError(f'Pretrain produced no individuals in {args.population_dir}')
 
-        # Whatever pretrain cost -- freshly trained or charged for reuse -- is
-        # where the evolution curve begins. Recorded on every eval point so the
+        # What pretrain cost is where the evolution curve begins. Recorded on every eval point so the
         # phase boundary can be drawn without reading anything else.
         evaluator.phase_start = budget.spent
         print(f'[main] pretrain phase cost {budget.spent:.2f} epoch-equiv; '

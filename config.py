@@ -193,22 +193,20 @@ def _add_pretrain_config(parser):
                             'rounds. More rounds means fresher pseudo-labels but fewer '
                             'gradient steps each.')
     group.add_argument('--backbone-path', type=str, default=None,
-                       help='Where the phase-A backbone is cached. Defaults to a path '
-                            'beside the population. Reused across runs and charged at its '
-                            'recorded creation cost, like the population itself.')
+                       help='BASELINE ONLY, with --baseline-init backbone: directory '
+                            'holding a backbone that a SESiL run produced (its '
+                            '<run dir>/backbone). Loading it is how the baseline starts '
+                            'from identical weights, which is what separates "the '
+                            'backbone helped" from "evolution helped". SESiL runs always '
+                            'train their own; nothing is ever picked up implicitly.')
     group.add_argument('--pretrain-batch-size', type=int, default=500)
     group.add_argument('--pretrain-workers', type=int, default=2,
                        help='DataLoader workers per run. Low by default because '
                             'this is PER RUN: several seeds in parallel multiply '
                             'it, and 3 runs x 8 workers is 24 loader processes '
                             'competing for the same cores.')
-    group.add_argument('--population-dir', type=str, default=None,
-                       help='Where the initial population lives. Defaults to a path '
-                            'derived from the dataset/model/population settings.')
-    group.add_argument('--force-pretrain', action='store_true', default=False,
-                       help='Re-run pretrain even if a population already exists.')
     group.add_argument('--pretrain-only', action='store_true', default=False,
-                       help='Create the initial population and stop.')
+                       help='Create the initial population and stop, without evolving.')
 
 
 def _add_evolution_config(parser):
@@ -363,34 +361,6 @@ def parse_int_list(value):
     return [int(v) for v in str(value).split(',') if v.strip() != '']
 
 
-def default_population_dir(args):
-    """Where the initial population lives when --population-dir is not given.
-
-    e.g. ./checkpoints/cifar10_C3_P10/resnet20x4/seed0/initial
-
-    Keyed by dataset / classes-per-model / population size AND SEED.
-
-    The seed is what makes concurrent runs safe. Without it, every seed of one
-    configuration writes its population into the same directory, so seeds
-    launched in parallel interleave their writes and corrupt each other -- and
-    even run sequentially, later seeds would silently inherit the first seed's
-    population, which also means they inherit a population built against a
-    different train/validation split.
-
-    It also makes seeds genuinely independent: pretrain randomness varies with
-    the seed like everything else, so error bands across seeds cover the whole
-    pipeline rather than the evolution stage alone.
-
-    To share one population across seeds deliberately -- an ablation that holds
-    pretrain fixed and varies only evolution -- pass --population-dir
-    explicitly. Build it once first (`--pretrain-only`) rather than racing
-    several runs at it.
-    """
-    tag = f'{args.dataset}_C{args.classes_per_model}_P{args.pop_size}'
-    return os.path.join('./checkpoints', tag, arch_name(args),
-                        f'seed{args.seed}', 'initial')
-
-
 def run_dir(args):
     """Root for this run's artefacts, kept separate per method/config/seed."""
     if args.method == 'sesil':
@@ -448,8 +418,10 @@ def resolve(args):
     # the loop spends the budget and stops when it runs out.
     args.baseline_epochs = int(args.budget)
 
-    if args.population_dir is None:
-        args.population_dir = default_population_dir(args)
     args.run_dir = run_dir(args)
+    # Generation 0 is just the first generation, written into this run's own
+    # directory like every later one. Nothing is shared between runs, so
+    # concurrent seeds cannot collide and no run inherits another's state.
+    args.population_dir = os.path.join(args.run_dir, 'checkpoints', 'gen_0')
 
     return args

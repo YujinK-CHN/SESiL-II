@@ -13,9 +13,9 @@ depends on the directory name meaning anything, which is the point: the old
 scheme hashed the class subset into the name and needed a global mapping.json
 to decode it, and that name could disagree with reality.
 
-Generation 0 is the `initial` population produced by pretrain; generation N is
-written under the run directory so that runs and seeds never overwrite each
-other.
+Every generation, including generation 0 from pretrain, is written under the
+run directory, so runs and seeds never overwrite each other and nothing is
+shared between them.
 """
 
 import json
@@ -28,9 +28,12 @@ AGENT_META = 'agent.json'
 
 
 def generation_dir(args, generation):
-    """Directory holding the population at the start of `generation`."""
-    if generation == 0:
-        return args.population_dir
+    """Directory holding the population at the start of `generation`.
+
+    Uniform: generation 0 is the first generation, not a special shared
+    location. Every run builds its own, so concurrent runs never collide and
+    none inherits another's state.
+    """
     return os.path.join(args.run_dir, 'checkpoints', f'gen_{generation}')
 
 
