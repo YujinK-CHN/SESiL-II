@@ -154,4 +154,8 @@ def _run_sesil(args, budget, data, logger, evaluator):
 
 
 if __name__ == '__main__':
-    sys.exit(main() or 0)
+    # Deliberately NOT sys.exit(main()): main() returns the generation count
+    # for sesil and a (model, accuracy) tuple for baseline, and using either as
+    # an exit status makes a successful run look like a failure to run.sh.
+    # A normal return exits 0; an exception still propagates and exits non-zero.
+    main()

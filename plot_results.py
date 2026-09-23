@@ -174,7 +174,7 @@ def print_table(series_data, metric, band):
         print()
 
 
-def render(series_data, phase_starts, metric, band, out_path, mode, title):
+def render(series_data, phase_starts, metric, band, out_path, mode, title, ylabel=None):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -227,7 +227,8 @@ def render(series_data, phase_starts, metric, band, out_path, mode, title):
                     annotation_clip=False)
 
     ax.set_xlabel('Training budget  (epoch-equivalents)', color=t['ink_2'], fontsize=10)
-    ax.set_ylabel(METRIC_LABELS.get(metric, metric), color=t['ink_2'], fontsize=10)
+    ax.set_ylabel(ylabel or METRIC_LABELS.get(metric, metric),
+                  color=t['ink_2'], fontsize=10)
     ax.set_title(title, color=t['ink'], fontsize=12, pad=14, loc='left')
 
     ax.grid(axis='y', color=t['grid'], lw=0.9, zorder=0)
@@ -259,7 +260,18 @@ def main():
     p.add_argument('--out', default=None, help='output image path')
     p.add_argument('--mode', default='light', choices=['light', 'dark'],
                    help='colour mode; dark is stepped for the dark surface, not flipped')
-    p.add_argument('--title', default=None)
+    p.add_argument('--title', default=None,
+                   help='figure title (default: derived from the directory name)')
+    p.add_argument('--ylabel', default=None,
+                   help='y-axis label (default: derived from --metric)')
+    p.add_argument('--label', action='append', default=[], metavar='OLD=NEW',
+                   help='rename a series in the legend and its direct label, e.g. '
+                        '--label "sesil (permute)=SESiL (permutation)". Repeatable. '
+                        'Run without it once to see the series names as detected.')
+    p.add_argument('--order', default=None,
+                   help='comma-separated series names (original, pre-rename) fixing '
+                        'draw and colour order. Series not listed are dropped, which '
+                        'is also how you plot a subset.')
     p.add_argument('--table', action='store_true',
                    help='also print the numbers behind every point')
     p.add_argument('--list-metrics', action='store_true',
@@ -285,10 +297,34 @@ def main():
         return
 
     grouped = group_runs(runs)
+
+    if args.order:
+        wanted = [n.strip() for n in args.order.split(',') if n.strip()]
+        missing = [n for n in wanted if n not in grouped]
+        if missing:
+            raise SystemExit(
+                f'--order names series that are not here: {missing}\n'
+                f'detected: {sorted(grouped)}')
+        grouped = {n: grouped[n] for n in wanted}
+
+    renames = {}
+    for pair in args.label:
+        if '=' not in pair:
+            raise SystemExit(f'--label expects OLD=NEW, got {pair!r}')
+        old, new = pair.split('=', 1)
+        old = old.strip()
+        if old not in grouped:
+            raise SystemExit(
+                f'--label refers to {old!r}, which is not a series here.\n'
+                f'detected: {sorted(grouped)}')
+        renames[old] = new.strip()
+
     print(f'{len(runs)} run(s) in {len(grouped)} series:')
     for name, members in grouped.items():
         seeds = sorted(m['seed'] for m in members if m['seed'] is not None)
-        print(f'  {name:<24} seeds {seeds if seeds else "?"}')
+        shown = renames.get(name)
+        suffix = f'   -> "{shown}"' if shown else ''
+        print(f'  {name:<24} seeds {seeds if seeds else "?"}{suffix}')
 
     series_data = {}
     for name, members in grouped.items():
@@ -303,13 +339,16 @@ def main():
             print(f'  NOTE: seeds of {name!r} have different budget grids; '
                   f'interpolated onto their overlap. Compare with care.')
 
+    if renames:
+        series_data = {renames.get(k, k): v for k, v in series_data.items()}
+
     if args.table:
         print_table(series_data, args.metric, args.band)
 
     out = args.out or os.path.join(args.root, f'{args.metric}.png')
     title = args.title or f'Budget-matched comparison  ({os.path.basename(os.path.normpath(args.root))})'
     render(series_data, [r['phase_start'] for r in runs],
-           args.metric, args.band, out, args.mode, title)
+           args.metric, args.band, out, args.mode, title, args.ylabel)
 
 
 if __name__ == '__main__':
