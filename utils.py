@@ -821,16 +821,6 @@ def prepare_experiment_config(config):
             new_config[key] = config[key]
     return new_config
 
-def get_config_from_name(name, device=None):
-    """ Load config based on its name. """
-    out = deepcopy(getattr(__import__('configs.' + name), name).config)
-    if device is None and 'device' not in out:
-        out['device'] = 'cuda'
-    elif device is not None:
-        out['device'] = device
-    return out
-
-
 ##########################################################################################################################
 #################################################### HELPER FUNCTIONS ####################################################
 ##########################################################################################################################

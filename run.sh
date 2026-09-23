@@ -1,80 +1,62 @@
 #!/usr/bin/env bash
 #
-# Master launcher. Controls what is shared across every method: seeds, the
-# training budget, the dataset, and which methods to dispatch.
+# Master launcher.
+#
+# Three knobs, because only three things change between runs of a suite:
+#
+#   --dataset   which environment   (cifar10 | cifar100)
+#   --budget    training budget     (generations for sesil, epochs for baseline)
+#   --seeds     comma-separated seeds
+#
+# Everything else -- merger, selection, population shape, hyper-parameters --
+# lives in config.py. Edit it there.
 #
 # Usage:
-#   bash run.sh --seeds 0,1,2 [--run-mode sequential] [--method sesil] [extra flags...]
+#   bash run.sh --dataset cifar10  --budget 25 --seeds 0
+#   bash run.sh --dataset cifar100 --budget 40 --seeds 0,1,2
+#   bash run.sh --dataset cifar10  --budget 100 --seeds 0 --method baseline
 #
-# Examples:
-#   bash run.sh --seeds 0,1,2
-#   bash run.sh --seeds 0 --method sesil --merger zipit --generations 40
-#   bash run.sh --seeds 0,1,2,3 --run-mode parallel --dataset cifar100
-#
-# Any flag this script does not recognise is passed straight through to
-# run_<method>.sh and on to main.py, so every knob in config.py is reachable
-# from the command line without editing Python.
+# Any unrecognised flag is passed through to config.py, so a one-off override is
+# still possible without editing anything:
+#   bash run.sh --dataset cifar10 --budget 25 --seeds 0 --merger zipit
 
 set -euo pipefail
 
-# ───────────────────────── defaults ─────────────────────────
+# ───────────────────────── the three knobs ──────────────────────────
+DATASET="cifar10"
+BUDGET=25
 SEEDS="0"
+
+# ───────────────────────── run control ──────────────────────────────
+METHODS=(sesil)            # sesil | baseline  (override with --method)
 RUN_MODE="sequential"      # sequential | parallel
 EXP_NAME="check"
-DATASET="cifar10"
-
-# Training budget
-GENERATIONS=25             # SESiL: generations
-BASELINE_EPOCHS=100        # baseline: epochs
-
-# Population
-POP_SIZE=10
-CLASSES_PER_MODEL=3
-PRETRAIN_EPOCHS=20
-
-# Which methods to run. Comment out what you do not need.
-METHODS=(
-  sesil
-  # baseline
-)
 
 EXTRA_ARGS=()
 
-# ───────────────────────── arg parsing ──────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --seeds)             SEEDS="$2"; shift 2;;
-    --run-mode)          RUN_MODE="$2"; shift 2;;
-    --exp-name)          EXP_NAME="$2"; shift 2;;
-    --dataset)           DATASET="$2"; shift 2;;
-    --generations)       GENERATIONS="$2"; shift 2;;
-    --baseline-epochs)   BASELINE_EPOCHS="$2"; shift 2;;
-    --pop-size)          POP_SIZE="$2"; shift 2;;
-    --classes-per-model) CLASSES_PER_MODEL="$2"; shift 2;;
-    --pretrain-epochs)   PRETRAIN_EPOCHS="$2"; shift 2;;
-    --method)            METHODS=("$2"); shift 2;;
-    *)                   EXTRA_ARGS+=("$1"); shift;;
+    --dataset)   DATASET="$2";   shift 2;;
+    --budget)    BUDGET="$2";    shift 2;;
+    --seeds)     SEEDS="$2";     shift 2;;
+    --method)    METHODS=("$2"); shift 2;;
+    --run-mode)  RUN_MODE="$2";  shift 2;;
+    --exp-name)  EXP_NAME="$2";  shift 2;;
+    *)           EXTRA_ARGS+=("$1"); shift;;
   esac
 done
 
 IFS=',' read -ra SEED_LIST <<< "$SEEDS"
 
-echo "Methods : ${METHODS[*]}"
-echo "Seeds   : ${SEED_LIST[*]}"
-echo "Mode    : $RUN_MODE"
-echo "Dataset : $DATASET"
-echo "Extra   : ${EXTRA_ARGS[*]-}"
+echo "dataset : $DATASET"
+echo "budget  : $BUDGET"
+echo "seeds   : ${SEED_LIST[*]}"
+echo "methods : ${METHODS[*]}"
+echo "mode    : $RUN_MODE"
 
-# Settings every method shares.
-COMMON_ARGS=(
-  --exp-name "$EXP_NAME"
-  --dataset "$DATASET"
-  --pop-size "$POP_SIZE"
-  --classes-per-model "$CLASSES_PER_MODEL"
-  --pretrain-epochs "$PRETRAIN_EPOCHS"
-)
+COMMON_ARGS=(--dataset "$DATASET" --budget "$BUDGET" --exp-name "$EXP_NAME")
 
-# ───────────────────────── dispatch ─────────────────────────
+# ───────────────────────── dispatch ─────────────────────────────────
 PIDS=()
 LABELS=()
 
@@ -85,28 +67,21 @@ for method in "${METHODS[@]}"; do
     exit 1
   fi
 
-  # Per-method budget flag.
-  case "$method" in
-    sesil)    BUDGET_ARGS=(--generations "$GENERATIONS");;
-    baseline) BUDGET_ARGS=(--baseline-epochs "$BASELINE_EPOCHS");;
-    *)        BUDGET_ARGS=();;
-  esac
-
   for seed in "${SEED_LIST[@]}"; do
     echo ">> $method  seed=$seed"
     if [[ "$RUN_MODE" == "parallel" ]]; then
-      bash "$script" --seed "$seed" "${COMMON_ARGS[@]}" "${BUDGET_ARGS[@]}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} &
+      bash "$script" --seed "$seed" "${COMMON_ARGS[@]}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} &
       PIDS+=($!)
       LABELS+=("$method/seed$seed")
       sleep 5
     else
-      bash "$script" --seed "$seed" "${COMMON_ARGS[@]}" "${BUDGET_ARGS[@]}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+      bash "$script" --seed "$seed" "${COMMON_ARGS[@]}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
         || echo "!! $method seed=$seed FAILED, continuing."
     fi
   done
 done
 
-# ───────────────────────── wait ─────────────────────────────
+# ───────────────────────── wait ─────────────────────────────────────
 if [[ "$RUN_MODE" == "parallel" ]]; then
   echo "Launched ${#PIDS[@]} jobs. Waiting..."
   FAILED=0

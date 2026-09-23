@@ -1,23 +1,28 @@
 """
-Single configuration entry point for every method implemented in SESiL-II.
+Single configuration file for every method implemented in SESiL-II.
 
-Every knob that a run.sh / run_<method>.sh script needs to control lives here and
-nowhere else.  Shell scripts pass --flags; nothing has to be edited in Python to
-launch a different experiment.
+Only three things are meant to change from the command line, because only three
+things change between runs of an experiment suite:
 
-Layout mirrors the SEMCS config (argparse groups), adapted to the
-pretrain -> evolution pipeline:
+    --dataset   which environment to run in   (cifar10 / cifar100)
+    --budget    total training budget         (generations for SESiL, epochs for baseline)
+    --seed      random seed
 
-    common      seed, device, method, dataset, model, output locations
+    bash run.sh --dataset cifar100 --budget 40 --seeds 0,1,2
+
+Everything else -- merge operator, selection rule, population shape, all the
+hyper-parameters -- is set by the defaults below. Edit them here. They are still
+exposed as CLI flags so a one-off sweep can override one without editing the
+file, but run.sh does not pass them, so this file is the single source of truth.
+
+Groups:
+    run         the three knobs above, plus method and output locations
+    model       backbone
     pretrain    how the initial population is created
-    evolution   the generation loop (budget, merger, selection, mutation)
-    merging     hyper-parameters of the merge operator itself
+    evolution   the SESiL generation loop
+    merging     hyper-parameters of the merge operator
     selection   hyper-parameters of mate selection
     baseline    the learning-based classifier baseline
-
-Use:
-    from config import get_config, build_raw_config
-    args = get_config().parse_args()
 """
 
 import argparse
@@ -25,13 +30,12 @@ import os
 
 
 # --------------------------------------------------------------------------- #
-# Dataset presets.  Keyed by --dataset; consumed by build_raw_config().
+# Environments.  Keyed by --dataset.
 #
-# 'loader_name' must match a variable in datasets/configs.py.  Note that the
+# 'loader_name' must match a variable in datasets/configs.py.  Note the
 # CIFAR-100 entry there is called 'cifar50' -- a name inherited from ZipIt!,
 # where it meant "50 classes per model".  It is the full CIFAR-100 dataset
-# (num_classes: 100).  The indirection here is so that --dataset can use the
-# obvious name.
+# (num_classes: 100).  This indirection lets --dataset use the obvious name.
 # --------------------------------------------------------------------------- #
 DATASET_PRESETS = {
     'cifar10': {
@@ -45,22 +49,36 @@ DATASET_PRESETS = {
 }
 
 
-def _add_common_config(parser):
-    group = parser.add_argument_group('common')
-    group.add_argument('--method', type=str, default='sesil',
-                       choices=['sesil', 'baseline'],
-                       help="Which algorithm to run. 'sesil' is the evolutionary "
-                            "pipeline; 'baseline' is the learning-based classifier.")
-    group.add_argument('--exp-name', type=str, default='check',
-                       help='Identifier for this experiment; names the output folder.')
-    group.add_argument('--seed', type=int, default=0,
-                       help='Random seed for torch/numpy/random.')
-    group.add_argument('--device', type=str, default=None,
-                       help="'cuda', 'cpu', or None to auto-detect.")
+def _add_run_config(parser):
+    """The three knobs run.sh exposes, plus method and where output goes."""
+    group = parser.add_argument_group('run')
 
     group.add_argument('--dataset', type=str, default='cifar10',
                        choices=sorted(DATASET_PRESETS.keys()),
-                       help='Dataset preset.')
+                       help='Which environment to run in.')
+    group.add_argument('--budget', type=int, default=25,
+                       help='Total training budget. For --method sesil this is '
+                            'the number of generations; for --method baseline '
+                            'it is the number of epochs.')
+    group.add_argument('--seed', type=int, default=0,
+                       help='Random seed for torch/numpy/random.')
+
+    group.add_argument('--method', type=str, default='sesil',
+                       choices=['sesil', 'baseline'],
+                       help="'sesil' is the evolutionary pipeline; 'baseline' is "
+                            'the learning-based classifier it is compared against.')
+    group.add_argument('--exp-name', type=str, default='check',
+                       help='Identifier for this experiment; names the output folder.')
+    group.add_argument('--device', type=str, default=None,
+                       help="'cuda', 'cpu', or unset to auto-detect.")
+    group.add_argument('--output-root', type=str, default='./results',
+                       help='Root for all run artefacts (checkpoints + csv).')
+    group.add_argument('--data-dir', type=str, default='./data',
+                       help='Root holding the raw dataset downloads.')
+
+
+def _add_model_config(parser):
+    group = parser.add_argument_group('model')
     group.add_argument('--model-name', type=str, default='resnet20',
                        help="Backbone family, e.g. 'resnet20' or 'vgg11'.")
     group.add_argument('--model-width', type=int, default=4,
@@ -68,11 +86,6 @@ def _add_common_config(parser):
     group.add_argument('--eval-type', type=str, default='logits',
                        choices=['logits', 'clip'],
                        help='Head type used for evaluation.')
-
-    group.add_argument('--output-root', type=str, default='./results',
-                       help='Root for all run artefacts (checkpoints + csv).')
-    group.add_argument('--data-dir', type=str, default='./data',
-                       help='Root holding the raw CIFAR downloads.')
 
 
 def _add_pretrain_config(parser):
@@ -87,7 +100,7 @@ def _add_pretrain_config(parser):
     group.add_argument('--pretrain-workers', type=int, default=8)
     group.add_argument('--population-dir', type=str, default=None,
                        help='Where the initial population lives. Defaults to a path '
-                            'derived from the dataset/model/pop settings.')
+                            'derived from the dataset/model/population settings.')
     group.add_argument('--force-pretrain', action='store_true', default=False,
                        help='Re-run pretrain even if a population already exists.')
     group.add_argument('--pretrain-only', action='store_true', default=False,
@@ -96,11 +109,6 @@ def _add_pretrain_config(parser):
 
 def _add_evolution_config(parser):
     group = parser.add_argument_group('evolution')
-    group.add_argument('--generations', type=int, default=25,
-                       help='Total training budget, in generations.')
-    group.add_argument('--start-gen', type=int, default=0,
-                       help='Resume from this generation. 0 starts from the initial '
-                            'population; N>0 reads generation N from the run folder.')
     group.add_argument('--merger', type=str, default='permute',
                        choices=['zipit', 'permute', 'wavg'],
                        help='Which merge operator crossover uses.')
@@ -111,6 +119,9 @@ def _add_evolution_config(parser):
                        help='Finetune epochs applied to each offspring (mutation).')
     group.add_argument('--no-mutation', action='store_true', default=False,
                        help='Skip the finetune step entirely.')
+    group.add_argument('--start-gen', type=int, default=0,
+                       help='Resume from this generation. 0 starts from the initial '
+                            'population; N>0 reads generation N from the run folder.')
 
 
 def _add_merging_config(parser):
@@ -150,10 +161,8 @@ def _add_baseline_config(parser):
                        choices=['scratch', 'finetune'],
                        help="'scratch' trains one classifier on --baseline-classes; "
                             "'finetune' extends a checkpoint onto --finetune-classes.")
-    group.add_argument('--baseline-epochs', type=int, default=100,
-                       help='Training budget for the baseline classifier.')
     group.add_argument('--baseline-classes', type=str, default=None,
-                       help="Comma-separated class ids, or None for the full dataset.")
+                       help='Comma-separated class ids, or unset for the full dataset.')
     group.add_argument('--finetune-classes', type=str, default=None,
                        help='Comma-separated class ids to add in finetune mode.')
     group.add_argument('--baseline-load-path', type=str, default=None,
@@ -167,7 +176,8 @@ def get_config():
         description='SESiL-II: social, evolutionary supported learning.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    _add_common_config(parser)
+    _add_run_config(parser)
+    _add_model_config(parser)
     _add_pretrain_config(parser)
     _add_evolution_config(parser)
     _add_merging_config(parser)
@@ -188,7 +198,7 @@ def arch_name(args):
 
 
 def parse_int_list(value):
-    """'0,1,2' -> [0, 1, 2]; None/'' -> None."""
+    """'0,1,2' -> [0, 1, 2]; None/''/'None' -> None."""
     if value is None or str(value).strip() in ('', 'None', 'none'):
         return None
     return [int(v) for v in str(value).split(',') if v.strip() != '']
@@ -198,25 +208,29 @@ def default_population_dir(args):
     """Where the initial population lives when --population-dir is not given.
 
     e.g. ./checkpoints/cifar10_C3_P10/resnet20x4/initial
+
+    Keyed by dataset/classes/population so two different population shapes never
+    collide, and so a population is reused across runs that share that shape.
     """
     tag = f'{args.dataset}_C{args.classes_per_model}_P{args.pop_size}'
     return os.path.join('./checkpoints', tag, arch_name(args), 'initial')
 
 
 def run_dir(args):
-    """Root for this run's artefacts, kept separate per method/seed."""
+    """Root for this run's artefacts, kept separate per method/config/seed."""
     if args.method == 'sesil':
         leaf = f'{args.merger}_{args.selection}'
     else:
         leaf = f'baseline_{args.baseline_mode}'
-    return os.path.join(args.output_root, args.exp_name, leaf, f'seed{args.seed}')
+    return os.path.join(args.output_root, args.exp_name, args.dataset, leaf,
+                        f'seed{args.seed}')
 
 
 def build_raw_config(args):
     """Assemble the dict that utils.prepare_experiment_config() expects.
 
-    This replaces the per-experiment modules under configs/ -- the settings now
-    come from the flags above instead of from a checked-in Python file.
+    This replaces the old per-experiment modules under configs/ -- the settings
+    now come from the flags above instead of from a checked-in Python file.
     """
     preset = DATASET_PRESETS[args.dataset]
     return {
@@ -241,9 +255,16 @@ def resolve(args):
 
     if args.device is None:
         args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    if args.population_dir is None:
-        args.population_dir = default_population_dir(args)
+
     args.num_classes = DATASET_PRESETS[args.dataset]['num_classes']
     args.arch = arch_name(args)
+
+    # One budget knob, spent differently by each method.
+    args.generations = args.budget       # SESiL: generations
+    args.baseline_epochs = args.budget   # baseline: epochs
+
+    if args.population_dir is None:
+        args.population_dir = default_population_dir(args)
     args.run_dir = run_dir(args)
+
     return args

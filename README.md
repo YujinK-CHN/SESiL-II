@@ -18,22 +18,39 @@ pip install -r requirements.txt
 
 ### Usage
 
-Everything runs through `run.sh`. Pretrain happens automatically -- there is no
-manual copying of an initial population.
+Everything runs through `run.sh`, which exposes exactly three knobs:
+
+| knob | meaning |
+|---|---|
+| `--dataset` | which environment: `cifar10` or `cifar100` |
+| `--budget` | total training budget: generations for SESiL, epochs for the baseline |
+| `--seeds` | comma-separated seeds |
 
 ```bash
-# SESiL with the default merger (permutation), one seed
-bash run.sh --seeds 0
+# SESiL on CIFAR-10, 25 generations, one seed
+bash run.sh --dataset cifar10 --budget 25 --seeds 0
 
-# Three seeds, ZipIt! merging, guided mate selection, 40 generations
-bash run.sh --seeds 0,1,2 --merger zipit --selection guided --generations 40
+# CIFAR-100, 40 generations, three seeds
+bash run.sh --dataset cifar100 --budget 40 --seeds 0,1,2
 
-# The learning-based baseline classifier
-bash run.sh --seeds 0 --method baseline --baseline-epochs 100
+# the learning-based baseline classifier, 100 epochs
+bash run.sh --dataset cifar10 --budget 100 --seeds 0 --method baseline
+```
+
+Pretrain happens automatically -- there is no manual copying of an initial
+population. If one already exists for the configured shape it is reused.
+
+**Everything else lives in `config.py`.** Merge operator, selection rule,
+population size, classes per model, all hyper-parameters: edit them there, in
+one place. They are still exposed as CLI flags, so a one-off sweep can override
+one without editing the file:
+
+```bash
+bash run.sh --dataset cifar10 --budget 25 --seeds 0 --merger zipit --selection guided
 ```
 
 **Methods.** There are two: `sesil` (the evolutionary pipeline) and `baseline`
-(a conventionally trained classifier). The merge operator and the mate-selection
+(a conventionally trained classifier). The merge operator and mate-selection
 rule are *arguments to SESiL*, not separate methods:
 
 | flag | values |
@@ -41,30 +58,23 @@ rule are *arguments to SESiL*, not separate methods:
 | `--merger` | `zipit`, `permute`, `wavg` |
 | `--selection` | `bidirectional`, `breed`, `guided`, `hard` |
 
-**Configuration.** Every knob lives in `config.py`, grouped by stage (common /
-pretrain / evolution / merging / selection / baseline). Anything in there can be
-set from the command line, so no Python needs editing to change an experiment.
-Run `python main.py --help` to see them all. Per-method defaults live at the top
-of `run_sesil.sh` and `run_baseline.sh`; shared settings (seeds, budget,
-dataset, population) live at the top of `run.sh`.
-
-**Pipeline.** `main.py` runs pretrain -> evolution. Pretrain is skipped when a
-population already exists at the resolved path; pass `--force-pretrain` to
-rebuild it, or `--pretrain-only` to stop after it. A run that was interrupted
-resumes with `--start-gen N`.
+**Resuming.** A run that was interrupted continues with `--start-gen N`. Pass
+`--force-pretrain` to rebuild the initial population, or `--pretrain-only` to
+stop after it.
 
 **Outputs.** Each run writes to
-`results/<exp-name>/<merger>_<selection>/seed<N>/` containing `config.json`, a
-`results.csv` with one row per individual per generation, and `checkpoints/gen_N/`
-holding each generation's population.
+`results/<exp-name>/<dataset>/<merger>_<selection>/seed<N>/` containing
+`config.json` (every setting the run used), `results.csv` (one row per
+individual per generation, with `Generation`, `Stage` and `Seed` columns), and
+`checkpoints/gen_N/` holding each generation's population.
 
 **Layout.**
 
 ```
-run.sh              seeds, budget, dataset; dispatches to a method
-run_sesil.sh        SESiL: merger + selection + their hyper-parameters
+run.sh              dataset, budget, seeds -> dispatches to a method
+run_sesil.sh        SESiL launcher
 run_baseline.sh     learning-based classifier baseline
-config.py           every setting for every method, in one place
+config.py           EVERY setting for every method, in one place
 main.py             entry point: pretrain -> evolution
 sesil/
   pretrain.py       creates the initial population
@@ -75,11 +85,8 @@ sesil/
   fitness.py        per-individual and multi-task evaluation
   population.py     on-disk population layout and naming
   registry.py       merger / selection lookup tables
-  data.py           raw CIFAR loaders
+  data.py           raw dataset loaders
 ```
-
-The original per-method scripts under `training_scripts/` are kept for
-reference; they are superseded by the above.
 
 ## Citation
 
