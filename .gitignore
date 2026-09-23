@@ -1,3 +1,11 @@
+# Downloaded datasets and trained weights (large, regenerable)
 /checkpoints
 /data
-/datasets
+
+# Run artefacts
+/results
+/csvs
+
+# Python
+__pycache__/
+*.py[cod]
