@@ -25,26 +25,43 @@ import numpy as np
 # Mating score
 # --------------------------------------------------------------------------- #
 
-def mating_score(cert_a, cert_b, fitness_b,
+def mating_score(cert_a, cert_b, strength_b,
                  weight_extra=1.0, weight_common=0.1):
     """How much A values B as a mate.
 
     Classes B is certified in that A is not are worth weight_extra; classes both
-    hold are worth weight_common. Each is weighted by how good B actually is at
-    it, so a certificate scraped at the floor counts for less than a strong one.
+    hold are worth weight_common.
+
+    `strength_b` is B's per-class weight vector, supplied by --mate-score:
+
+        count     all ones -- the pure certificate. Mate choice decides the
+                  offspring's inherited certificate, which is the union of the
+                  parents' certificate SETS, so scoring the set directly makes
+                  the objective and the outcome the same object.
+        accuracy  B's raw per-class accuracy. Prefers strong certificate
+                  holders, but discriminates only inside an already-selected
+                  band and flattens as the population saturates.
+        rank      B's population percentile on the class. Scale-free, so it
+                  keeps separating agents late in a run when accuracies have
+                  converged.
 
     Directional by construction: score(A, B) != score(B, A).
     """
     extra_skills = cert_b - cert_a
     common_skills = cert_a & cert_b
 
-    score = weight_extra * sum(fitness_b[i] for i in extra_skills)
-    score += weight_common * sum(fitness_b[i] for i in common_skills)
+    score = weight_extra * sum(strength_b[i] for i in extra_skills)
+    score += weight_common * sum(strength_b[i] for i in common_skills)
     return score
 
 
 def build_score_matrix(population_info, **kwargs):
-    """Directional mating scores: scores[a][b] = how much a wants b."""
+    """Directional mating scores: scores[a][b] = how much a wants b.
+
+    Each record carries 'Strength', the per-class weight vector already
+    resolved for the configured --mate-score mode, so all three modes share one
+    code path and differ only in what that vector contains.
+    """
     scores = {}
     for agent_a in population_info:
         cert_a = set(agent_a['Certificate'])
@@ -53,7 +70,7 @@ def build_score_matrix(population_info, **kwargs):
             if agent_a is agent_b:
                 continue
             scores[agent_a['Model Name']][agent_b['Model Name']] = mating_score(
-                cert_a, set(agent_b['Certificate']), agent_b['Per Class'], **kwargs
+                cert_a, set(agent_b['Certificate']), agent_b['Strength'], **kwargs
             )
     return scores
 

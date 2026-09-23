@@ -39,7 +39,13 @@ from sesil.budget import (
     FORWARD_TRAIN_PASSES_PER_MERGE,
     samples_for,
 )
-from sesil.certificate import certify_population, coverage, inherit, training_classes
+from sesil.certificate import (
+    certify_population,
+    coverage,
+    inherit,
+    strength_matrix,
+    training_classes,
+)
 from sesil.data import get_loaders
 from sesil.fitness import evaluate_all_classes, summarise
 from sesil.merge import merge_pair, point_at
@@ -104,9 +110,13 @@ def evaluate_and_certify(agent_ids, raw_config, args, csv_file, generation, budg
         num_classes=args.num_classes,
     )
 
+    # Per-class weights mate selection will use, resolved once for the whole
+    # population so every scoring mode shares one code path.
+    strengths = strength_matrix(args.mate_score, per_class_accuracy, args.num_classes)
+
     population_info = []
-    for agent_id, per_class, overall, cert in zip(
-            agent_ids, per_class_accuracy, overalls, certificates):
+    for agent_id, per_class, overall, cert, strength in zip(
+            agent_ids, per_class_accuracy, overalls, certificates, strengths):
         record = summarise(per_class, overall, cert)
         _log(record, csv_file,
              Generation=generation, Stage='population', Agent=agent_id,
@@ -114,6 +124,7 @@ def evaluate_and_certify(agent_ids, raw_config, args, csv_file, generation, budg
              Merger=args.merger, Selection=args.selection, Seed=args.seed)
         record['Model Name'] = agent_id      # selection keys on the id
         record['Certificate'] = cert
+        record['Strength'] = strength
         population_info.append(record)
 
     stats = coverage(certificates, args.num_classes)
