@@ -82,6 +82,9 @@ def main(argv=None):
         elif args.method == 'baseline':
             from sesil.baseline import run_baseline
             result = run_baseline(args, budget, data, logger, evaluator)
+        elif args.method == 'probe':
+            from sesil.probe.driver import run_probe
+            result = run_probe(args, budget, data, logger, evaluator)
         else:
             raise ValueError(f'Unknown method {args.method!r}')
     finally:
@@ -112,7 +115,24 @@ def _print_banner(args, data, budget):
     print(f'eval every : {args.eval_interval} epoch-equivalents '
           f'(~{int(args.budget / max(args.eval_interval, 1e-9)) + 1} points)')
 
-    if args.method == 'sesil':
+    if args.method == 'probe':
+        n_pairs = args.pop_size * (args.pop_size - 1) // 2
+        stop = args.stop_node if args.stop_node is not None else 'none / full merge'
+        print(f'setting    : mate-screening probe (NOT a learning method)')
+        print(f'merger     : {args.merger}  (stop-node {stop})  <- under test')
+        print(f'population : {args.pop_size} x {args.classes_per_model} classes')
+        print(f'  -> {n_pairs} pairs, {2 * n_pairs} children to evaluate')
+        print(f'pretrain   : mode {args.pretrain_mode}, '
+              f'{estimate_pretrain_cost(args):.2f} epoch-equiv')
+        # Said plainly because --budget is run.sh's headline knob and here it
+        # controls nothing: the probe never trains, so nothing consumes it.
+        # Pretrain is sized by --pretrain-budget, which is independent of it.
+        print(f'NOTE: --budget is INERT in this setting -- the probe does not '
+              f'train, so nothing\n      spends it. Pretrain is sized by '
+              f'--pretrain-budget ({args.pretrain_budget:g}); the rest of the '
+              f'cost is\n      {n_pairs} merges and {2 * n_pairs} evaluations, '
+              f'which scale with --pop-size squared.')
+    elif args.method == 'sesil':
         pre = estimate_pretrain_cost(args)
         per_gen = estimate_generation_cost(args)
         gens = estimate_generations(args)

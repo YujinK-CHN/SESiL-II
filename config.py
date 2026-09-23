@@ -85,9 +85,15 @@ def _add_run_config(parser):
                        help='Random seed for torch/numpy/random.')
 
     group.add_argument('--method', type=str, default='sesil',
-                       choices=['sesil', 'baseline'],
+                       choices=['sesil', 'baseline', 'probe'],
                        help="'sesil' is the evolutionary pipeline; 'baseline' is "
-                            'the learning-based classifier it is compared against.')
+                            'the learning-based classifier it is compared against. '
+                            "'probe' is not a learning method at all -- it is a "
+                            'diagnostic setting that screens every possible pair '
+                            'with GLOBA and measures what each merge really '
+                            'produced. It shares this flag because it shares the '
+                            'launcher and the output layout, but it optimises '
+                            'nothing and plot_results.py does not read it.')
     group.add_argument('--exp-name', type=str, default='check',
                        help='Identifier for this experiment; names the output folder.')
     group.add_argument('--device', type=str, default=None,
@@ -304,6 +310,38 @@ def _add_selection_config(parser):
                        help='Attempts to find reciprocated pairs before giving up.')
 
 
+def _add_probe_config(parser):
+    """--method probe only. GLOBA's decomposition, used to screen candidate pairs.
+
+    These control the analysis, never the merge: the probe's children are built
+    by the configured --merger, exactly as SESiL would build them. GLOBA is only
+    ever asked for a prediction here.
+    """
+    group = parser.add_argument_group('probe')
+    group.add_argument('--probe-eta', type=float, default=0.80,
+                       help='Energy kept when pruning cells inside the analysed '
+                            'subspace. GLOBA reports 0.80 as its modal value. '
+                            'Same for both parents, so the decomposition stays '
+                            'symmetric under swapping them.')
+    group.add_argument('--probe-svd-energy', type=float, default=0.90,
+                       help='Symmetric energy truncation defining the analysed '
+                            'subspace. 1.0 analyses everything, which is '
+                            'degenerate for any layer with out <= in because the '
+                            'output-side basis is then an arbitrary rotation.')
+    group.add_argument('--probe-basis-energy', type=float, default=0.999,
+                       help='Energy kept when re-orthogonalising the concatenated '
+                            'singular vectors. 1.0 uses the numerical rank.')
+    group.add_argument('--probe-layer-weighting', type=str, default='energy',
+                       choices=['energy', 'uniform'],
+                       help="How ~20 per-layer decompositions collapse into one "
+                            "number per pair. 'energy' weighs each layer by its "
+                            "share of the pair's total update energy, so a large "
+                            "late conv counts for more than a tiny early one; "
+                            "'uniform' treats every layer alike. Per-layer values "
+                            'are kept in the output either way, since the signal '
+                            'may not live uniformly across depth.')
+
+
 def _add_baseline_config(parser):
     group = parser.add_argument_group('baseline')
     group.add_argument('--baseline-init', type=str, default='scratch',
@@ -339,6 +377,7 @@ def get_config():
     _add_merging_config(parser)
     _add_certificate_config(parser)
     _add_selection_config(parser)
+    _add_probe_config(parser)
     _add_baseline_config(parser)
     return parser
 
@@ -365,6 +404,8 @@ def run_dir(args):
     """Root for this run's artefacts, kept separate per method/config/seed."""
     if args.method == 'sesil':
         leaf = args.merger
+    elif args.method == 'probe':
+        leaf = f'probe_{args.merger}'
     else:
         leaf = f'baseline_{args.baseline_mode}'
     return os.path.join(args.output_root, args.exp_name, args.dataset, leaf,
