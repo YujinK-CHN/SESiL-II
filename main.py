@@ -112,7 +112,20 @@ def _print_banner(args, data, budget):
         stop = args.stop_node if args.stop_node is not None else 'none / full merge'
         print(f'merger     : {args.merger}  (stop-node {stop})')
         print(f'population : {args.pop_size} x {args.classes_per_model} classes')
-        print(f'  pretrain        {pre:.2f} epoch-equiv')
+        from sesil.pretrain import cost_multiplier, phase_budgets
+        from sesil.ssl import uses_labels
+        phase_a, phase_b = phase_budgets(args)
+        print(f'pretrain   : mode {args.pretrain_mode}, {pre:.2f} epoch-equiv total')
+        if phase_a <= 0:
+            print(f'    (no phase A -- every agent trained from scratch on its '
+                  f'own subset, {phase_b / max(args.pop_size, 1):.3f} each)')
+        else:
+            mult = cost_multiplier(args)
+            labels = 'uses labels' if uses_labels(args.phase_a_method) else 'label-free'
+            print(f'    phase A       {phase_a:.2f}  shared backbone: '
+                  f'{args.phase_a_method} ({labels}), cost x{mult:g}')
+            print(f'    phase B       {phase_b:.2f}  '
+                  f'{phase_b / max(args.pop_size, 1):.3f} per agent')
         print(f'  per agent/gen   {args.individual_budget:.3f} epoch-equiv '
               f'= {per_agent} sample-presentations')
         print(f'  per generation  {per_gen:.2f} epoch-equiv ({args.pop_size} agents)')
@@ -131,7 +144,7 @@ def _run_sesil(args, budget, data, logger, evaluator):
     # Stage 1: pretrain. Skipped when a population is already on disk, unless
     # --force-pretrain. This is what used to be a manual copy step.
     if args.start_gen == 0:
-        population = ensure_population(args, data, budget)
+        population = ensure_population(args, data, budget, logger)
         if not population:
             raise RuntimeError(f'Pretrain produced no individuals in {args.population_dir}')
 

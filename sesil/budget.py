@@ -138,13 +138,13 @@ class BudgetTracker:
 
 
 def estimate_pretrain_cost(args):
-    """Epoch-equivalents pretrain will consume, before it runs.
+    """Epoch-equivalents the pretrain stage will consume.
 
-    Each individual trains on classes_per_model of num_classes, and CIFAR is
-    class-balanced, so the data fraction is exact.
+    Exact rather than derived: --pretrain-budget IS the cost, split between
+    phase A (the shared backbone) and phase B (per-agent finetuning) by
+    --phase-a-ratio.
     """
-    fraction = args.classes_per_model / args.num_classes
-    return args.pop_size * args.pretrain_epochs * fraction
+    return float(args.pretrain_budget)
 
 
 def estimate_generation_cost(args):

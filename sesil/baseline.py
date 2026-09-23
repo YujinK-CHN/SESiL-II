@@ -18,7 +18,8 @@ import torch
 from config import parse_int_list
 from utils import evaluate_logits, save_model, train_logits
 
-from sesil.pretrain import build_model
+from sesil.pretrain import backbone_cost, build_model, load_backbone
+from sesil.ssl import reset_classifier
 
 
 def run_baseline(args, budget, data, logger, evaluator):
@@ -51,7 +52,7 @@ def _train_scratch(args, budget, data, evaluator):
           f'{classes if classes is not None else "all classes"} '
           f'for {args.baseline_epochs} epochs')
 
-    model = build_model(args, num_classes).train()
+    model = _init_model(args, num_classes, budget)
     model, acc = _train_and_log(args, model, train_loader, val_loader,
                                 args.baseline_epochs, budget, evaluator)
     return model, acc
@@ -89,6 +90,39 @@ def _train_finetune(args, budget, data, evaluator):
     model, acc = _train_and_log(args, model, train_loader, val_loader,
                                 args.baseline_epochs, budget, evaluator)
     return model, acc
+
+
+def _init_model(args, num_classes, budget):
+    """Starting point for the baseline, per --baseline-init.
+
+    'backbone' loads the same phase-A backbone SESiL uses AND is charged its
+    recorded cost, so the two methods start level on both weights and budget.
+    Running the baseline both ways is what separates "the backbone helped" from
+    "evolution helped" -- with only the scratch variant, a SESiL win is
+    ambiguous.
+    """
+    model = build_model(args, num_classes)
+
+    if args.baseline_init != 'backbone':
+        return model.train()
+
+    state = load_backbone(args)
+    if state is None:
+        raise SystemExit(
+            '--baseline-init backbone, but no phase-A backbone is cached.\n'
+            'Run the SESiL side first (or `--method sesil --pretrain-only`) so '
+            'the backbone exists, then point this run at the same '
+            '--population-dir / --backbone-path.')
+
+    model.load_state_dict(state, strict=False)
+    reset_classifier(model)
+
+    cost = backbone_cost(args)
+    if cost and budget is not None:
+        budget.spend_samples('phase_a', budget.train_set_size * cost, epochs=1)
+        print(f'[baseline] initialised from the phase-A backbone, '
+              f'charged {cost:.2f} epoch-equiv for it')
+    return model.train()
 
 
 def _train_and_log(args, model, train_loader, val_loader, epochs, budget, evaluator):

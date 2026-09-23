@@ -124,13 +124,58 @@ def _add_model_config(parser):
 
 
 def _add_pretrain_config(parser):
+    """Pretrain runs in two phases, as in SEMCS.
+
+        phase A   train ONE backbone on all classes, typically self-supervised
+        phase B   copy it to every agent, then finetune each on its own subset
+
+    --phase-a-ratio splits the pretrain budget between them. The point of the
+    shared backbone is not only better features: agents finetuned from a common
+    initialisation stay in the same loss basin, so alignment is close to
+    identity and merging destroys far less than it does between independently
+    initialised models.
+    """
     group = parser.add_argument_group('pretrain')
     group.add_argument('--pop-size', type=int, default=10,
                        help='Number of individuals in the initial population.')
     group.add_argument('--classes-per-model', type=int, default=3,
                        help='How many classes each initial individual is trained on.')
-    group.add_argument('--pretrain-epochs', type=int, default=20,
-                       help='Epochs per individual during pretrain.')
+    group.add_argument('--pretrain-mode', type=str, default='none',
+                       choices=['none', 'ssl'],
+                       help="How the initial population is built. 'none' is the "
+                            "original SESiL behaviour -- every agent trained from "
+                            "scratch on its own class subset -- kept as the default so "
+                            "it stays available as a baseline / ablation. 'ssl' runs "
+                            "the two-phase scheme: one shared backbone trained on all "
+                            "classes (phase A), then per-agent finetuning (phase B).")
+    group.add_argument('--pretrain-budget', type=float, default=10.0,
+                       help='Budget for the whole pretrain stage, in epoch-equivalents, '
+                            'carved out of --budget. Split between phase A and phase B '
+                            'by --phase-a-ratio.')
+    group.add_argument('--phase-a-ratio', type=float, default=0.7,
+                       help='SSL MODE ONLY. Fraction of --pretrain-budget spent on '
+                            'phase A (the shared backbone); phase B gets the rest, '
+                            'divided equally among agents.')
+    group.add_argument('--phase-a-method', type=str, default='rotation',
+                       help="SSL MODE ONLY. Objective for the backbone, from the registry "
+                            "in sesil/ssl.py. 'rotation' is a self-supervised pretext task "
+                            "(predict the rotation applied to an image) and is handed "
+                            "images without labels, so it cannot read one. 'supervised' "
+                            "trains on all classes WITH labels -- not self-supervised, and "
+                            "included as the control that separates 'a shared backbone "
+                            "helps' from 'self-supervision helps'.")
+    group.add_argument('--phase-a-cost-multiplier', type=float, default=None,
+                       help='Epoch-equivalents charged per image in phase A. Leave unset '
+                            'and it defaults to the forward passes per image the objective '
+                            'itself performs (rotation 4, supervised 1), declared beside '
+                            'the method '
+                            'in sesil/ssl.py -- so switching methods re-prices phase A '
+                            'automatically instead of silently charging the wrong rate. '
+                            'Set it explicitly only to override that.')
+    group.add_argument('--backbone-path', type=str, default=None,
+                       help='Where the phase-A backbone is cached. Defaults to a path '
+                            'beside the population. Reused across runs and charged at its '
+                            'recorded creation cost, like the population itself.')
     group.add_argument('--pretrain-batch-size', type=int, default=500)
     group.add_argument('--pretrain-workers', type=int, default=8)
     group.add_argument('--population-dir', type=str, default=None,
@@ -239,6 +284,13 @@ def _add_selection_config(parser):
 
 def _add_baseline_config(parser):
     group = parser.add_argument_group('baseline')
+    group.add_argument('--baseline-init', type=str, default='scratch',
+                       choices=['scratch', 'backbone'],
+                       help="Where the baseline starts. 'scratch' is random init; "
+                            "'backbone' loads the same phase-A backbone SESiL uses and is "
+                            "charged for it identically. Running both separates 'the "
+                            "backbone helps' from 'evolution helps' -- with only the "
+                            "scratch variant you cannot tell which produced a gain.")
     group.add_argument('--baseline-mode', type=str, default='scratch',
                        choices=['scratch', 'finetune'],
                        help="'scratch' trains one classifier on --baseline-classes; "
