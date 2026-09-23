@@ -26,7 +26,7 @@ from sklearn.model_selection import train_test_split
 
 from utils import train_logits
 
-from sesil.population import list_population, save_agent
+from sesil.population import list_population, read_meta, save_agent
 
 
 def build_model(args, num_classes):
@@ -47,28 +47,61 @@ def ensure_population(args, data, budget=None):
 
     Returns the list of model ids making up generation 0.
 
-    When a population is reused rather than trained, nothing is charged to the
-    budget -- the compute was spent by whichever run created it. That makes
-    reuse across seeds cheaper but means the budget figures of two runs are
-    only comparable when both trained their own population, so the reuse is
-    reported loudly.
+    A reused population is still CHARGED, at what it originally cost to build
+    (see _charge_reused_population). Reuse saves wall-clock, not budget: the
+    compute that produced those specialists was really spent, and letting SESiL
+    inherit them for free while the baseline starts from random init would quietly
+    unmatch a budget-matched comparison.
     """
     existing = list_population(args.population_dir)
 
     if existing and not args.force_pretrain:
-        print(f'[pretrain] Found {len(existing)} individuals in {args.population_dir}; '
+        print(f'[pretrain] Found {len(existing)} agents in {args.population_dir}; '
               f'skipping pretrain.')
         if len(existing) != args.pop_size:
             print(f'[pretrain] NOTE: --pop-size is {args.pop_size} but the existing '
                   f'population has {len(existing)} members. Using what is on disk. '
                   f'Pass --force-pretrain to rebuild it.')
-        print('[pretrain] NOTE: reused population is NOT charged to this run\'s '
-              'budget. For a like-for-like budget comparison, use --force-pretrain '
-              'or a fresh --population-dir.')
+        _charge_reused_population(args, existing, budget)
         return existing
 
     print(f'[pretrain] Building a population of {args.pop_size} into {args.population_dir}')
     return pretrain_population(args, data, budget)
+
+
+def _charge_reused_population(args, agent_ids, budget):
+    """Charge a reused population at what it originally cost to create.
+
+    Reuse must not be free. The compute that produced those specialists was
+    really spent, and if SESiL inherits them for nothing while the baseline
+    starts from random init, the budget-matched comparison is not matched at
+    all -- SESiL simply gets a head start the ledger never sees.
+
+    The price is read from each agent's own metadata rather than recomputed, so
+    it stays correct even if --pretrain-epochs or --pop-size have changed since
+    the population was built.
+    """
+    if budget is None:
+        return 0.0
+
+    recorded = [read_meta(args.population_dir, a).get('pretrain_cost')
+                for a in agent_ids]
+
+    if any(c is None for c in recorded):
+        from sesil.budget import estimate_pretrain_cost
+        total = estimate_pretrain_cost(args)
+        print(f'[pretrain] WARNING: this population records no creation cost '
+              f'(built before costs were tracked). Falling back to the estimate '
+              f'for the CURRENT settings: {total:.2f} epoch-equiv. If those '
+              f'settings differ from the ones that built it, the figure is wrong '
+              f'-- rebuild with --force-pretrain for exact accounting.')
+    else:
+        total = float(sum(recorded))
+        print(f'[pretrain] Reused population charged at its recorded creation '
+              f'cost: {total:.2f} epoch-equiv.')
+
+    budget.spend_samples('pretrain', budget.train_set_size * total, epochs=1)
+    return total
 
 
 def pretrain_population(args, data, budget=None):
@@ -90,12 +123,13 @@ def pretrain_population(args, data, budget=None):
         train_loader = data.train_loader(classes=split)
 
         n_samples = len(train_loader.dataset)
+        # Computed whether or not there is a ledger, because the cost is stored
+        # with the agent so a later run can be charged for reusing it.
+        cost = (n_samples * args.pretrain_epochs) / max(data.train_size, 1)
         if budget is not None:
-            cost = budget.spend_samples('pretrain', n_samples, epochs=args.pretrain_epochs)
-            print(f'[pretrain] {individual + 1}/{args.pop_size} on classes {split}  '
-                  f'{n_samples} samples  cost={cost:.3f} epoch-equiv')
-        else:
-            print(f'[pretrain] {individual + 1}/{args.pop_size} on classes {split}')
+            budget.spend_samples('pretrain', n_samples, epochs=args.pretrain_epochs)
+        print(f'[pretrain] {individual + 1}/{args.pop_size} on classes {split}  '
+              f'{n_samples} samples  cost={cost:.3f} epoch-equiv')
 
         model = build_model(args, num_classes).train()
         model, final_acc = train_logits(
@@ -115,6 +149,7 @@ def pretrain_population(args, data, budget=None):
             'certificate': [],          # granted at the first evaluation
             'trained_on': split,
             'pretrain_subset': split,
+            'pretrain_cost': round(cost, 6),   # what reusing this agent costs
             'parents': [],
             'is_loner': False,
         }

@@ -51,6 +51,14 @@ class Evaluator:
         self.budget = budget
         self.meta = dict(meta or {})
 
+        # Budget consumed before the measured phase begins. For SESiL this is
+        # the pretrain cost, set by main.py once pretrain is done or a reused
+        # population has been charged; the curve therefore starts here rather
+        # than at zero, and a plot can draw the phase boundary straight from
+        # eval.jsonl without cross-referencing config.json. Zero for the
+        # baseline, which has no preparatory phase.
+        self.phase_start = 0.0
+
         # First watermark is 0.0, so every run records its starting point
         # before any budget is spent -- the curves all begin at the same place.
         self.next_watermark = 0.0
@@ -98,6 +106,7 @@ class Evaluator:
         record = self._reduce(per_class, overall)
         record.update(self.meta)
         record['budget'] = round(self.budget.spent, 4)
+        record['phase_start'] = round(self.phase_start, 4)
         record['step'] = step
         record['step_kind'] = step_kind
         record['final'] = bool(final)

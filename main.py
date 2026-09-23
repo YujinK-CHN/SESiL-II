@@ -134,6 +134,13 @@ def _run_sesil(args, budget, data, logger, evaluator):
         population = ensure_population(args, data, budget)
         if not population:
             raise RuntimeError(f'Pretrain produced no individuals in {args.population_dir}')
+
+        # Whatever pretrain cost -- freshly trained or charged for reuse -- is
+        # where the evolution curve begins. Recorded on every eval point so the
+        # phase boundary can be drawn without reading anything else.
+        evaluator.phase_start = budget.spent
+        print(f'[main] pretrain phase cost {budget.spent:.2f} epoch-equiv; '
+              f'evolution curve starts there.')
     else:
         print(f'[main] resuming from generation {args.start_gen}; skipping pretrain.')
 
