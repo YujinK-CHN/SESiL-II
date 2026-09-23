@@ -739,21 +739,6 @@ def prepare_resnets(config, device):
     }
 
 
-def prepare_singan(config, device):
-    """ Load all pretrained singan models in config. """
-    from models.singan import Sampler
-
-    bases = []
-    for i, base_path in tqdm(enumerate(config['bases']), desc="Preparing Models"):
-        base_model = Sampler()
-        base_model._init_eval(base_path, config['data_paths'][i], device)
-        bases.append(base_model)
-        
-    new_model = Sampler()
-    new_model._init_eval(base_path, config['data_paths'][i], device) # this will be merged model.
-
-    return { 'bases': bases, 'new': new_model }
-
 def prepare_vgg(config, device):
     """ Load all pretrained vgg models in config. """
     if 'vgg11' in config['name']:
@@ -788,8 +773,6 @@ def prepare_models(config, device='cuda'):
     """ Load all pretrained models in config. """
     if config['name'].startswith('resnet'):
         return prepare_resnets(config, device)
-    elif config['name'].startswith('singan'):
-        return prepare_singan(config, device)
     elif config['name'].startswith('vgg'):
         return prepare_vgg(config, device)
     else:
@@ -802,8 +785,6 @@ def prepare_graph(config):
         model_name = config['name'].split('x')[0]
         import graphs.resnet_graph as graph_module
         graph = getattr(graph_module, model_name)
-    elif config['name'].startswith('singan'):
-        from graphs.singan_graph import SinGANGraph as graph
     elif config['name'].startswith('vgg'):
         model_name = config['name'].split('_w')[0]
         import graphs.vgg_graph as graph_module
