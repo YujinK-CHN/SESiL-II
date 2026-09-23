@@ -5,10 +5,10 @@ Only three things are meant to change from the command line, because only three
 things change between runs of an experiment suite:
 
     --dataset   which environment to run in   (cifar10 / cifar100)
-    --budget    total training budget         (generations for SESiL, epochs for baseline)
+    --budget    total training budget, in epoch-equivalents (see sesil/budget.py)
     --seed      random seed
 
-    bash run.sh --dataset cifar100 --budget 40 --seeds 0,1,2
+    bash run.sh --dataset cifar100 --budget 500 --seeds 0,1,2
 
 Everything else -- merge operator, selection rule, population shape, all the
 hyper-parameters -- is set by the defaults below. Edit them here. They are still
@@ -21,6 +21,7 @@ Groups:
     pretrain    how the initial population is created
     evolution   the SESiL generation loop
     merging     hyper-parameters of the merge operator
+    certificate what an agent is licensed to train on
     selection   hyper-parameters of mate selection
     baseline    the learning-based classifier baseline
 """
@@ -119,8 +120,15 @@ def _add_evolution_config(parser):
     group.add_argument('--selection', type=str, default='bidirectional',
                        choices=['bidirectional', 'breed', 'guided', 'hard'],
                        help='Which mate-selection strategy to use.')
-    group.add_argument('--mutate-epochs', type=int, default=2,
-                       help='Finetune epochs applied to each offspring (mutation).')
+    group.add_argument('--individual-budget', type=float, default=0.25,
+                       help='Training budget granted to ONE agent in ONE generation, '
+                            'in the same epoch-equivalent unit as --budget. Each agent '
+                            'is finetuned on exactly this many sample-presentations '
+                            'drawn from its own inherited labels, so every agent gets '
+                            'the same compute regardless of how many classes it covers. '
+                            'Values below 1.0 mean sub-epoch training, which is how you '
+                            'buy resolution: halving it doubles the number of '
+                            'generations for the same --budget.')
     group.add_argument('--no-mutation', action='store_true', default=False,
                        help='Skip the finetune step entirely.')
     group.add_argument('--start-gen', type=int, default=0,
@@ -146,17 +154,31 @@ def _add_merging_config(parser):
                        help='Comma-separated alignment metrics to accumulate.')
 
 
+def _add_certificate_config(parser):
+    """Proficiency certificates -- what an agent is licensed to train on.
+
+    Agents have no names. Every generation the population is evaluated on the
+    whole label space and ranked per class; the rule below decides who is
+    certified in what. See sesil/certificate.py.
+    """
+    group = parser.add_argument_group('certificate')
+    group.add_argument('--certify-top-frac', type=float, default=0.3,
+                       help='Fraction of the population that may hold a certificate '
+                            'in any one class. Proficiency is relative: an agent must '
+                            'be in this top slice of its peers on a class to be '
+                            'licensed to train on it.')
+    group.add_argument('--certify-floor', type=float, default=0.5,
+                       help='Absolute accuracy a certificate also requires, whatever '
+                            'the ranking says. Without it, the top slice of a '
+                            'uniformly incompetent population still gets certified.')
+
+
 def _add_selection_config(parser):
     group = parser.add_argument_group('selection')
-    group.add_argument('--tau', type=float, default=0.5,
-                       help='Accuracy threshold above which a class counts as "known".')
     group.add_argument('--weight-extra', type=float, default=1.0,
-                       help='Weight on skills the mate has that the chooser lacks.')
+                       help='Weight on certified classes the mate has and the chooser lacks.')
     group.add_argument('--weight-common', type=float, default=0.1,
-                       help='Weight on skills both already share.')
-    group.add_argument('--score-mode', type=str, default='threshold',
-                       choices=['threshold', 'soft'],
-                       help='Hard cutoff or graded weighting in the mating score.')
+                       help='Weight on certified classes both already hold.')
     group.add_argument('--max-retries', type=int, default=100,
                        help='Attempts to find reciprocated pairs before giving up.')
     group.add_argument('--breed-key', type=str, default='Joint',
@@ -189,6 +211,7 @@ def get_config():
     _add_pretrain_config(parser)
     _add_evolution_config(parser)
     _add_merging_config(parser)
+    _add_certificate_config(parser)
     _add_selection_config(parser)
     _add_baseline_config(parser)
     return parser

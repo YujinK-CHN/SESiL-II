@@ -3,17 +3,25 @@ The SESiL generation loop.
 
 One generation is:
 
-    evaluate  -- per-class fitness of every individual in the population
-    mate      -- pair individuals by complementary skills (sesil.selection)
-    merge     -- crossover each couple into one offspring (sesil.merge)
-    mutate    -- finetune each offspring on the labels it inherited
+    evaluate   -- every agent on the WHOLE label space
+    certify    -- rank the population per class; grant proficiency certificates
+    mate       -- pair agents by complementary certificates
+    merge      -- crossover each couple into one offspring
+    mutate     -- finetune each agent on what it is licensed to train on
 
-Loners (individuals nobody reciprocated) carry forward unchanged, so the
-population size is preserved across generations.
+Agents have no names. What an agent may train on comes from its certificate,
+which is re-measured from scratch every generation (sesil/certificate.py).
+Offspring start from the union of their parents' certificates and are
+re-certified from their own performance one generation later, so an inherited
+certificate can misdirect at most a single round of training before it
+self-corrects.
+
+Loners -- agents nobody reciprocated -- carry forward unchanged and earn one
+random uncertified class to explore, which is the only way a class enters an
+agent's repertoire other than through merging.
 
 The loop runs until the training budget is exhausted rather than for a fixed
-number of generations: each generation costs a different amount depending on
-how much of the label space the population covers. See sesil/budget.py.
+number of generations. See sesil/budget.py.
 """
 
 import os
@@ -23,50 +31,36 @@ import torch
 from tqdm.auto import tqdm
 
 from config import build_raw_config
-from utils import (
-    decode_labels,
-    prepare_experiment_config,
-    reset_bn_stats,
-    split_str_to_ints,
-    write_to_csv,
-)
+from utils import prepare_experiment_config, reset_bn_stats, write_to_csv
 
 from sesil.budget import (
     FORWARD_TRAIN_PASSES_PER_EVAL,
     FORWARD_TRAIN_PASSES_PER_LONER,
     FORWARD_TRAIN_PASSES_PER_MERGE,
+    samples_for,
 )
+from sesil.certificate import certify_population, coverage, inherit, training_classes
 from sesil.data import get_loaders
-from sesil.fitness import evaluate_individual, evaluate_merged
-from sesil.merge import merge_pair
+from sesil.fitness import evaluate_all_classes, summarise
+from sesil.merge import merge_pair, point_at
 from sesil.mutation import mutate
 from sesil.population import (
-    build_unique_key,
     generation_dir,
-    labels_of,
+    inherited_certificate,
     list_population,
-    save_individual,
+    save_agent,
 )
 from sesil.registry import get_selection_fn
-
-
-def inject_model(raw_config, model_id):
-    """Point the config at a single individual (the loner / evaluation case)."""
-    model_name = raw_config['model']['name']
-    raw_config['dataset']['class_splits'] = [split_str_to_ints(decode_labels(model_id))]
-    raw_config['model']['bases'] = [
-        os.path.join(raw_config['model']['dir'], model_id, f'{model_name}_v0.pth.tar')
-    ]
-    return raw_config
 
 
 def _log(results, csv_file, **extra):
     """Append one row, flattening anything that would break the csv."""
     row = {}
     for key, value in list(results.items()) + list(extra.items()):
-        if isinstance(value, (list, tuple, np.ndarray)):
-            # utils.write_to_csv joins on ',', so lists must not contain one.
-            row[key] = '|'.join(f'{float(v):.4f}' for v in np.asarray(value).ravel())
+        if isinstance(value, (list, tuple, set, frozenset, np.ndarray)):
+            seq = sorted(value) if isinstance(value, (set, frozenset)) else value
+            # utils.write_to_csv joins on ',', so values must not contain one.
+            row[key] = '|'.join(str(v) for v in np.asarray(seq).ravel())
         else:
             row[key] = value
     write_to_csv(row, csv_file=csv_file)
@@ -76,77 +70,117 @@ def _log(results, csv_file, **extra):
 # Stages
 # --------------------------------------------------------------------------- #
 
-def evaluate_population(model_ids, raw_config, args, csv_file, generation, budget):
-    """Per-class fitness for every individual. Drives mate selection."""
-    population_info = []
+def evaluate_and_certify(agent_ids, raw_config, args, csv_file, generation, budget):
+    """Measure every agent on all classes, then grant certificates by ranking.
 
-    for model_id in tqdm(model_ids, desc=f'Gen {generation}: evaluating population'):
-        inject_model(raw_config, model_id)
+    Evaluation has to cover the whole label space, not just what an agent was
+    trained on: certification ranks agents against each other per class, so an
+    agent's accuracy on classes it has never seen is exactly what decides it is
+    not proficient in them.
+    """
+    per_class_accuracy = []
+    overalls = []
+
+    for agent_id in tqdm(agent_ids, desc=f'Gen {generation}: evaluating'):
+        point_at(raw_config, [agent_id])
         config = prepare_experiment_config(raw_config)
 
         train_loader = config['data']['train']['full']
-        base_model = config['models']['bases'][0]
-        reset_bn_stats(base_model, train_loader)
+        model = config['models']['bases'][0]
+        reset_bn_stats(model, train_loader)
         budget.count_forward_train(FORWARD_TRAIN_PASSES_PER_EVAL)
-        budget.count_forward_test(2)   # evaluate_individual walks the test set twice
 
-        labels_str = labels_of(model_id)
-        results = evaluate_individual(base_model, config, labels_str, args.num_classes)
+        per_class, overall = evaluate_all_classes(
+            model, config['data']['test']['full'], args.num_classes)
+        budget.count_forward_test(1)
 
-        _log(results, csv_file,
-             Generation=generation, Stage='population', Name=labels_str,
+        per_class_accuracy.append(per_class)
+        overalls.append(overall)
+
+    certificates = certify_population(
+        per_class_accuracy,
+        top_frac=args.certify_top_frac,
+        floor=args.certify_floor,
+        num_classes=args.num_classes,
+    )
+
+    population_info = []
+    for agent_id, per_class, overall, cert in zip(
+            agent_ids, per_class_accuracy, overalls, certificates):
+        record = summarise(per_class, overall, cert)
+        _log(record, csv_file,
+             Generation=generation, Stage='population', Agent=agent_id,
+             Certificate=cert,
              Merger=args.merger, Selection=args.selection, Seed=args.seed)
+        record['Model Name'] = agent_id      # selection keys on the id
+        record['Certificate'] = cert
+        population_info.append(record)
 
-        results['Model Name'] = model_id     # selection keys on the id, not labels
-        population_info.append(results)
+    stats = coverage(certificates, args.num_classes)
+    print(f'[gen {generation}] certificates: '
+          f'mean {stats["cert_size_mean"]:.1f} classes '
+          f'(min {stats["cert_size_min"]}, max {stats["cert_size_max"]}), '
+          f'{stats["classes_covered"]}/{args.num_classes} classes covered, '
+          f'{stats["uncertified_agents"]} uncertified')
 
     return population_info
 
 
-def breed(pairs, loners, raw_config, args, csv_file, generation, budget):
+def breed(pairs, loners, population_info, raw_config, args, csv_file,
+          generation, budget):
     """Merge every couple, carry every loner.
 
-    Returns {label_key: (model, labels)}. The label list is carried explicitly
-    rather than parsed back out of the key, because build_unique_key may append
-    a disambiguating suffix that is not a class id.
+    Returns a list of dicts: {model, certificate, parents, is_loner}.
+    The certificate an offspring starts with is the union of its parents';
+    a loner keeps its own.
     """
-    offspring = {}
-    seen_keys = set()
+    by_id = {p['Model Name']: p for p in population_info}
+    offspring = []
 
     for pair in tqdm(pairs, desc=f'Gen {generation}: merging pairs'):
         merged, config = merge_pair(pair, raw_config, args)
         budget.count_forward_train(FORWARD_TRAIN_PASSES_PER_MERGE)
 
-        results = evaluate_merged(merged, config, eval_type=args.eval_type)
+        per_class, overall = evaluate_all_classes(
+            merged, config['data']['test']['full'], args.num_classes)
         budget.count_forward_test(1)
-        _log(results, csv_file,
+
+        cert = inherit([by_id[p]['Certificate'] for p in pair])
+        record = summarise(per_class, overall, cert)
+        _log(record, csv_file,
              Generation=generation, Stage='offspring',
-             Parents='+'.join(labels_of(p) for p in pair),
+             Parents='+'.join(pair), Certificate=cert,
              Time=merged.compute_transform_time,
              Merger=args.merger, Selection=args.selection, Seed=args.seed)
 
-        labels = '_'.join(labels_of(p) for p in pair).split('_')
-        key = build_unique_key(labels, seen_keys)
-        offspring[key] = (merged, sorted({int(c) for c in labels}))
+        offspring.append({
+            'model': merged,
+            'certificate': cert,
+            'parents': list(pair),
+            'is_loner': False,
+        })
 
     for loner in tqdm(loners, desc=f'Gen {generation}: carrying loners'):
-        inject_model(raw_config, loner)
+        point_at(raw_config, [loner])
         config = prepare_experiment_config(raw_config)
 
         train_loader = config['data']['train']['full']
-        base_model = config['models']['bases'][0]
-        reset_bn_stats(base_model, train_loader)
+        model = config['models']['bases'][0]
+        reset_bn_stats(model, train_loader)
         budget.count_forward_train(FORWARD_TRAIN_PASSES_PER_LONER)
 
-        results = evaluate_merged(base_model, config, eval_type=args.eval_type)
-        budget.count_forward_test(1)
-        _log(results, csv_file,
-             Generation=generation, Stage='loner', Parents=labels_of(loner),
+        cert = set(by_id[loner]['Certificate'])
+        record = summarise(by_id[loner]['Per Class'], by_id[loner]['Joint'], cert)
+        _log(record, csv_file,
+             Generation=generation, Stage='loner', Parents=loner, Certificate=cert,
              Time=0.0, Merger=args.merger, Selection=args.selection, Seed=args.seed)
 
-        labels = labels_of(loner).split('_')
-        key = build_unique_key(labels, seen_keys)
-        offspring[key] = (base_model, sorted({int(c) for c in labels}))
+        offspring.append({
+            'model': model,
+            'certificate': cert,
+            'parents': [loner],
+            'is_loner': True,
+        })
 
     return offspring
 
@@ -154,45 +188,72 @@ def breed(pairs, loners, raw_config, args, csv_file, generation, budget):
 def generation_mutation_cost(offspring, args):
     """Epoch-equivalents the next mutation step will cost.
 
-    Mutation is restricted to the labels an individual actually inherited, so
-    the cost is the summed label coverage rather than one full epoch each.
-    CIFAR is class-balanced, so |labels| / num_classes is the exact data
-    fraction.
+    Every agent is granted --individual-budget regardless of how many classes
+    it is licensed for, so the cost is the head count times that grant.
     """
-    total_fraction = sum(len(labels) for _, labels in offspring.values()) / args.num_classes
-    return total_fraction * args.mutate_epochs
+    return len(offspring) * args.individual_budget
 
 
-def mutate_and_save(offspring, args, next_dir, budget):
-    """Finetune each offspring on its own labels, then write the next generation.
+def mutate_and_save(offspring, args, next_dir, budget, generation, csv_file):
+    """Finetune each agent on its licensed classes, then write the next generation.
 
-    Restricting the data to inherited labels is what keeps skill acquisition
-    attributable to merging: an offspring never sees a class neither parent
-    knew, so coverage can only grow through crossover.
+    Two things are deliberate:
+
+    - Data is restricted to certified classes, so skill acquisition stays
+      attributable: an agent cannot learn a class it has not earned, except
+      through the single exploration slot a loner receives.
+    - Compute is NOT restricted by coverage. Each agent gets exactly
+      --individual-budget sample-presentations, cycling its subset if that
+      subset is small, so a narrow agent is not quietly starved relative to a
+      broad one.
     """
     os.makedirs(next_dir, exist_ok=True)
 
-    if args.no_mutation:
-        for label_key, (model, _labels) in offspring.items():
-            save_individual(model, next_dir, label_key, args.arch)
-        return
-
+    rng = np.random.default_rng(args.seed + generation)
+    sample_budget = samples_for(args.individual_budget, budget.train_set_size)
     loader_cache = {}
 
-    for label_key, (model, labels) in offspring.items():
-        key = tuple(labels)
+    for index, child in enumerate(offspring):
+        classes = training_classes(
+            child['certificate'], args.num_classes,
+            is_loner=child['is_loner'], rng=rng,
+        )
+        explored = sorted(set(classes) - set(child['certificate']))
+
+        meta = {
+            'generation': generation + 1,
+            'certificate': child['certificate'],
+            'trained_on': classes,
+            'explored': explored,
+            'parents': child['parents'],
+            'is_loner': child['is_loner'],
+        }
+
+        if args.no_mutation:
+            save_agent(child['model'], next_dir, index, args.arch, meta)
+            continue
+
+        key = tuple(classes)
         if key not in loader_cache:
-            loader_cache[key] = get_loaders(args, classes=labels)
+            loader_cache[key] = get_loaders(args, classes=classes)
         train_loader, test_loader, _ = loader_cache[key]
 
-        n_samples = len(train_loader.dataset)
-        cost = budget.spend_samples('mutation', n_samples, epochs=args.mutate_epochs)
-        print(f'[mutate] {label_key}  classes={labels}  '
-              f'{n_samples} samples  cost={cost:.3f} epoch-equiv')
+        n_available = len(train_loader.dataset)
+        cost = budget.spend_samples('mutation', sample_budget, epochs=1)
 
-        model, _ = mutate(model, train_loader, test_loader, epochs=args.mutate_epochs)
-        path = save_individual(model, next_dir, label_key, args.arch)
-        print(f'[mutate] saved -> {path}')
+        note = f' (+explore {explored})' if explored else ''
+        print(f'[mutate] agent_{index:03d}  train_on={classes}{note}  '
+              f'{sample_budget} presentations over {n_available} samples  '
+              f'cost={cost:.3f} epoch-equiv')
+
+        model, _ = mutate(child['model'], train_loader, test_loader,
+                          sample_budget=sample_budget, seed=args.seed)
+        save_agent(model, next_dir, index, args.arch, meta)
+
+        _log({}, csv_file,
+             Generation=generation, Stage='mutation',
+             Agent=f'agent_{index:03d}', TrainedOn=classes, Explored=explored,
+             Cost=round(cost, 4), Seed=args.seed)
 
 
 # --------------------------------------------------------------------------- #
@@ -221,26 +282,26 @@ def run_evolution(args, budget):
         current_dir = generation_dir(args, generation)
         next_dir = generation_dir(args, generation + 1)
 
-        model_ids = list_population(current_dir)
-        if not model_ids:
+        agent_ids = list_population(current_dir)
+        if not agent_ids:
             raise RuntimeError(
                 f'No population found in {current_dir}. '
                 f'Run pretrain first, or check --start-gen.'
             )
         raw_config['model']['dir'] = current_dir
-        print(f'[gen {generation}] population of {len(model_ids)} from {current_dir}')
+        print(f'[gen {generation}] population of {len(agent_ids)} from {current_dir}')
 
         # Merging and evaluation need no gradients; mutation does.
         with torch.no_grad():
-            population_info = evaluate_population(
-                model_ids, raw_config, args, csv_file, generation, budget)
+            population_info = evaluate_and_certify(
+                agent_ids, raw_config, args, csv_file, generation, budget)
 
             pairs, loners = selection_fn(population_info, args)
             print(f'[gen {generation}] {len(pairs) // 2} couples, {len(loners)} loners')
 
-            offspring = breed(
-                pairs, loners, raw_config, args, csv_file, generation, budget)
-            print(f'[gen {generation}] produced {len(offspring)} offspring')
+            offspring = breed(pairs, loners, population_info, raw_config, args,
+                              csv_file, generation, budget)
+            print(f'[gen {generation}] produced {len(offspring)} agents')
 
         # Stop before mutating if this generation would overrun the budget --
         # a partially-finetuned generation is not a meaningful result.
@@ -250,7 +311,7 @@ def run_evolution(args, budget):
                   f'but only {budget.remaining:.2f} remain -- stopping here.')
             break
 
-        mutate_and_save(offspring, args, next_dir, budget)
+        mutate_and_save(offspring, args, next_dir, budget, generation, csv_file)
 
         generation += 1
         completed += 1

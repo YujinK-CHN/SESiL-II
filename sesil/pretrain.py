@@ -9,7 +9,12 @@ trains what is missing.
 Each individual is a model trained on a random subset of --classes-per-model
 classes, saved as
 
-    <population dir>/<hash8 of its labels>/<arch>_v0.pth.tar
+    <population dir>/agent_NNN/<arch>_v0.pth.tar
+
+The subset it saw is stored as provenance, not identity. Generation 0 is
+evaluated across the whole label space like every later generation and earns its
+proficiency certificate from that measurement -- pretrain creates genuine
+specialists, and evaluation discovers what they specialise in.
 """
 
 import os
@@ -19,10 +24,10 @@ import numpy as np
 import torch
 from sklearn.model_selection import train_test_split
 
-from utils import encode_labels, save_model, train_logits
+from utils import train_logits
 
 from sesil.data import get_datasets, subset_by_classes
-from sesil.population import list_population
+from sesil.population import list_population, save_agent
 
 
 def build_model(args, num_classes):
@@ -108,13 +113,19 @@ def pretrain_population(args, budget=None):
         )
         print(f'[pretrain] accuracy on {split}: {final_acc}')
 
-        label_key = [str(c) for c in split]
-        model_id = encode_labels(label_key)
-        save_dir = os.path.join(args.population_dir, model_id)
-        os.makedirs(save_dir, exist_ok=True)
-        save_path = os.path.join(
-            save_dir, f'{args.arch}_v{len(os.listdir(save_dir))}.pth.tar')
-        save_model(model, save_path)
+        # The subset is recorded as provenance only. Nothing downstream reads
+        # it: generation 0 is evaluated on the whole label space like any other,
+        # and earns its certificate the same way. Pretrain creates genuine
+        # specialists; evaluation discovers what they specialise in.
+        meta = {
+            'generation': 0,
+            'certificate': [],          # granted at the first evaluation
+            'trained_on': split,
+            'pretrain_subset': split,
+            'parents': [],
+            'is_loner': False,
+        }
+        save_path = save_agent(model, args.population_dir, individual, args.arch, meta)
         print(f'[pretrain] saved -> {save_path}')
 
     print(f'[pretrain] done in {time.time() - start:.1f}s')

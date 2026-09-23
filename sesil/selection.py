@@ -1,12 +1,19 @@
 """
 Mate selection.
 
-All four strategies consume the same population_info -- a list of dicts produced
-by sesil.fitness.evaluate_population, each carrying 'Model Name' and the
-per-class accuracy vector 'Per Class' -- and return (pairs, loners).
+All four strategies consume the same population_info -- a list of dicts, one per
+agent, carrying 'Model Name', the per-class accuracy vector 'Per Class', and the
+'Certificate' granted this generation -- and return (pairs, loners).
 
-The scoring itself is unchanged from the original SESiL scripts; only the
-plumbing around it is new.
+What counts as a skill is the **certificate**, not a re-thresholding of the
+accuracy vector. Certification already decided who is proficient in what, by
+population-wide ranking plus an absolute floor (see sesil/certificate.py);
+applying a second, different threshold here would let an agent be courted for a
+class it is not licensed to train on.
+
+An agent with an empty certificate is worth zero to every possible mate, since
+mating_score sums the *mate's* skills. It therefore never gets reciprocated and
+lands in the loner pool by construction -- where it earns an exploration slot.
 """
 
 import random
@@ -18,61 +25,41 @@ import numpy as np
 # Mating score
 # --------------------------------------------------------------------------- #
 
-def known_classes(fitness, threshold=0.5):
-    """Indices of the classes this individual is considered to know."""
-    return {i for i, acc in enumerate(fitness) if acc > threshold}
-
-
-def mating_score(fitness_a, fitness_b, mode='threshold', threshold=0.5,
+def mating_score(cert_a, cert_b, fitness_b,
                  weight_extra=1.0, weight_common=0.1):
     """How much A values B as a mate.
 
-    Skills B has that A lacks are worth weight_extra; skills they share are
-    worth weight_common.  The score is directional: score(A, B) != score(B, A).
+    Classes B is certified in that A is not are worth weight_extra; classes both
+    hold are worth weight_common. Each is weighted by how good B actually is at
+    it, so a certificate scraped at the floor counts for less than a strong one.
+
+    Directional by construction: score(A, B) != score(B, A).
     """
-    if mode == 'threshold':
-        known_a = known_classes(fitness_a, threshold)
-        known_b = known_classes(fitness_b, threshold)
+    extra_skills = cert_b - cert_a
+    common_skills = cert_a & cert_b
 
-        extra_skills = known_b - known_a
-        common_skills = known_a & known_b
-
-        score = weight_extra * sum(fitness_b[i] for i in extra_skills)
-        score += weight_common * sum(fitness_b[i] for i in common_skills)
-
-    elif mode == 'soft':
-        # No hard cutoff, just weight by differences in accuracy.
-        score = 0.0
-        for acc_a, acc_b in zip(fitness_a, fitness_b):
-            if acc_b > 0:
-                if acc_a < threshold:      # A is weak here
-                    score += weight_extra * acc_b
-                else:                      # A is decent here too
-                    score += weight_common * acc_b
-    else:
-        raise ValueError("mode must be 'threshold' or 'soft'")
-
+    score = weight_extra * sum(fitness_b[i] for i in extra_skills)
+    score += weight_common * sum(fitness_b[i] for i in common_skills)
     return score
 
 
 def build_score_matrix(population_info, **kwargs):
     """Directional mating scores: scores[a][b] = how much a wants b."""
     scores = {}
-    for model_a in population_info:
-        fa = model_a['Per Class']
-        scores[model_a['Model Name']] = {}
-        for model_b in population_info:
-            if model_a is model_b:
+    for agent_a in population_info:
+        cert_a = set(agent_a['Certificate'])
+        scores[agent_a['Model Name']] = {}
+        for agent_b in population_info:
+            if agent_a is agent_b:
                 continue
-            fb = model_b['Per Class']
-            scores[model_a['Model Name']][model_b['Model Name']] = mating_score(fa, fb, **kwargs)
+            scores[agent_a['Model Name']][agent_b['Model Name']] = mating_score(
+                cert_a, set(agent_b['Certificate']), agent_b['Per Class'], **kwargs
+            )
     return scores
 
 
 def _score_kwargs(args):
     return dict(
-        mode=args.score_mode,
-        threshold=args.tau,
         weight_extra=args.weight_extra,
         weight_common=args.weight_common,
     )

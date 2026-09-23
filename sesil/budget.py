@@ -145,13 +145,31 @@ def estimate_pretrain_cost(args):
     return args.pop_size * args.pretrain_epochs * fraction
 
 
-def estimate_generation_cost(args, mean_label_fraction=1.0):
-    """Epoch-equivalents one generation of mutation will consume.
+def estimate_generation_cost(args):
+    """Epoch-equivalents one generation of mutation consumes.
 
-    Every individual is finetuned each generation -- offspring from couples and
-    loners alike -- so the population size is the multiplier. With mutation
-    restricted to inherited labels, `mean_label_fraction` is the average
-    |label union| / num_classes across the population, which grows toward 1.0
-    as coverage spreads.
+    Exact, not an estimate: every individual is finetuned each generation --
+    offspring from couples and loners alike -- and each is granted exactly
+    --individual-budget, whatever its label coverage. So a generation always
+    costs the same, and the generation count is known before the run starts.
     """
-    return args.pop_size * args.mutate_epochs * mean_label_fraction
+    return args.pop_size * args.individual_budget
+
+
+def estimate_generations(args):
+    """How many generations the budget affords, after paying for pretrain."""
+    per_gen = estimate_generation_cost(args)
+    if per_gen <= 0:
+        return 0
+    remaining = args.budget - estimate_pretrain_cost(args)
+    return max(0, int(remaining // per_gen))
+
+
+def samples_for(individual_budget, train_set_size):
+    """Sample-presentations one agent gets for its per-generation budget.
+
+    This is the quantity that makes per-agent compute independent of coverage:
+    an agent holding 3 of 10 classes cycles its smaller subset more times to
+    reach the same number of presentations as one holding all 10.
+    """
+    return int(round(individual_budget * train_set_size))

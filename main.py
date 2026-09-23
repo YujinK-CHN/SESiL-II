@@ -22,7 +22,13 @@ import sys
 from config import get_config, resolve
 from utils import set_seed
 
-from sesil.budget import BudgetTracker, estimate_generation_cost, estimate_pretrain_cost
+from sesil.budget import (
+    BudgetTracker,
+    estimate_generation_cost,
+    estimate_generations,
+    estimate_pretrain_cost,
+    samples_for,
+)
 
 
 def _make_budget(args):
@@ -57,15 +63,20 @@ def main(argv=None):
 
     if args.method == 'sesil':
         pre = estimate_pretrain_cost(args)
-        per_gen_full = estimate_generation_cost(args, mean_label_fraction=1.0)
+        per_gen = estimate_generation_cost(args)
+        gens = estimate_generations(args)
+        per_agent = samples_for(args.individual_budget, budget.train_set_size)
         print(f'merger     : {args.merger}')
         print(f'selection  : {args.selection}')
         print(f'population : {args.pop_size} x {args.classes_per_model} classes')
-        print(f'  pretrain estimated at {pre:.2f} epoch-equiv')
-        print(f'  each generation costs at most {per_gen_full:.2f} epoch-equiv '
-              f'(less while coverage is partial)')
-        print(f'  -> roughly {max(0, int((args.budget - pre) // max(per_gen_full, 1e-9)))} '
-              f'generations at full coverage, more early on')
+        print(f'  pretrain        {pre:.2f} epoch-equiv '
+              f'({args.pop_size} agents x {args.pretrain_epochs} epochs on '
+              f'{args.classes_per_model}/{args.num_classes} of the data)')
+        print(f'  per agent/gen   {args.individual_budget:.3f} epoch-equiv '
+              f'= {per_agent} sample-presentations')
+        print(f'  per generation  {per_gen:.2f} epoch-equiv '
+              f'({args.pop_size} agents)')
+        print(f'  -> {gens} generations from a budget of {args.budget:g}')
         print(f'population dir: {args.population_dir}')
     else:
         print(f'mode       : {args.baseline_mode}')

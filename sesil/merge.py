@@ -5,17 +5,35 @@ Which alignment function is used (ZipIt!, permutation, weight averaging) is an
 argument, resolved through sesil.registry -- it is not baked into the script.
 """
 
+import os
 from copy import deepcopy
 
 from model_merger import ModelMerge
 from utils import (
     get_merging_fn,
-    inject_pair,
     prepare_experiment_config,
     reset_bn_stats,
 )
 
 from sesil.registry import get_merger_name
+
+
+def point_at(raw_config, agent_ids):
+    """Point the config at one or more agents' checkpoints.
+
+    Replaces the old inject_model / inject_pair, which also had to write
+    `class_splits` derived from each agent's decoded name. Agents no longer
+    carry names, and evaluation now covers the whole label space, so no splits
+    are needed -- which also saves prepare_data a full scan of the dataset to
+    build per-split loaders it never used.
+    """
+    model_name = raw_config['model']['name']
+    raw_config['dataset'].pop('class_splits', None)
+    raw_config['model']['bases'] = [
+        os.path.join(raw_config['model']['dir'], agent_id, f'{model_name}_v0.pth.tar')
+        for agent_id in agent_ids
+    ]
+    return raw_config
 
 
 def node_params(args):
@@ -27,9 +45,9 @@ def merge_pair(pair, raw_config, args):
     """Merge one couple.
 
     Returns (merged_model, config) -- the config is returned too because it
-    carries the class_splits that evaluation needs.
+    carries the loaders evaluation needs.
     """
-    inject_pair(raw_config, pair)
+    point_at(raw_config, pair)
     config = prepare_experiment_config(raw_config)
 
     train_loader = config['data']['train']['full']
