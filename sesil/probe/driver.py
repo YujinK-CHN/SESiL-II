@@ -175,6 +175,7 @@ def run_probe(args, budget, data, logger, evaluator=None):
     # ---------------------------------------------------------------- stage 3
     train_loader = data.train_loader()
     rows = []
+    layer_rows = []
     start = time.time()
 
     pairs = list(itertools.combinations(agent_ids, 2))
@@ -190,6 +191,35 @@ def run_probe(args, budget, data, logger, evaluator=None):
             weighting=args.probe_layer_weighting,
         )
         predict_seconds = time.time() - t0
+
+        # Per-layer breakdown, kept separately from pairs.jsonl.
+        #
+        # It belongs to the COUPLE, not to either child, so writing it into the
+        # child rows would duplicate every number and make a pair count twice
+        # in any correlation computed off that file. A separate file also keeps
+        # pairs.jsonl small enough to stay pleasant for the common case.
+        #
+        # 'weight' is what the whole-network summary used to average this layer
+        # in, so an analysis can re-weight the layers differently -- or look at
+        # one layer alone -- without recomputing anything.
+        for layer_name, s in per_layer.items():
+            layer_rows.append({
+                'pair': [a, b],
+                'layer': layer_name,
+                'weight': s['norm_p'] ** 2 + s['norm_q'] ** 2,
+                **{f'energy_{t}': s['energy_frac'][t] for t in TYPES},
+                **{f'merged_energy_{t}': s['energy_frac_merged'][t] for t in TYPES},
+                'cancellation': s['cancellation'],
+                'typed_frac_p': s['typed_frac_p'],
+                'typed_frac_q': s['typed_frac_q'],
+                'cosine': s['cosine'],
+                'norm_p': s['norm_p'],
+                'norm_q': s['norm_q'],
+                'basis_u': s['basis_u'],
+                'basis_v': s['basis_v'],
+                'nnz_p': s['nnz_p'],
+                'nnz_q': s['nnz_q'],
+            })
 
         # --- the ground truth: the merger SESiL would actually have used ---
         with torch.no_grad():
@@ -282,13 +312,19 @@ def run_probe(args, budget, data, logger, evaluator=None):
         for row in rows:
             f.write(json.dumps(row, default=float) + '\n')
 
+    layer_path = os.path.join(args.run_dir, 'layers.jsonl')
+    with open(layer_path, 'w') as f:
+        for row in layer_rows:
+            f.write(json.dumps(row, default=float) + '\n')
+
     summary = _summarise(rows, args)
     with open(os.path.join(args.run_dir, 'probe_summary.json'), 'w') as f:
         json.dump(summary, f, indent=2, default=float)
 
     print(f'\n[probe] {len(pairs)} pairs, {len(rows)} children, '
           f'{time.time() - start:.1f}s')
-    print(f'[probe] rows -> {out_path}')
+    print(f'[probe] rows   -> {out_path}')
+    print(f'[probe] layers -> {layer_path}  ({len(layer_rows)} rows)')
     _print_summary(summary)
     print(budget.report())
 

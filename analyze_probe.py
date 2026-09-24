@@ -46,6 +46,59 @@ def permutation_p(xs, ys, n_perm=10000, seed=0):
     return (hits + 1) / (n_perm + 1)
 
 
+def _rank_normalise(values):
+    """Map values to evenly spaced ranks in [0, 1], ties broken by order.
+
+    Seeds differ in the absolute scale of both predictor and outcome -- one
+    population is simply better than another -- so only the ordering within a
+    seed carries meaning. Rank-normalising before pooling keeps a seed with a
+    wide spread from dominating one with a narrow one.
+    """
+    n = len(values)
+    if n < 2:
+        return [0.5] * n
+    order = sorted(range(n), key=lambda i: values[i])
+    out = [0.0] * n
+    for position, index in enumerate(order):
+        out[index] = position / (n - 1)
+    return out
+
+
+def pool_across_seeds(runs, outcome, n_perm=5000):
+    """Rank correlation and significance over every pair from every seed.
+
+    This is where a real but modest effect becomes visible: rho ~ 0.3 on 28
+    pairs is indistinguishable from chance, while the same rho on 84 is not.
+    """
+    pooled = {}
+    per_seed = [_per_pair(load(run_dir)) for run_dir in runs]
+    per_seed = [pairs for pairs in per_seed if len(pairs) >= 3]
+    if not per_seed:
+        return pooled
+
+    for name in PREDICTORS:
+        if name not in per_seed[0][0]:
+            continue
+        xs, ys, rhos = [], [], []
+        for pairs in per_seed:
+            values = [r[name] for r in pairs]
+            outs = [r[outcome] for r in pairs]
+            xs += _rank_normalise(values)
+            ys += _rank_normalise(outs)
+            rhos.append(_spearman(values, outs))
+        pooled[name] = {
+            'rho': _spearman(xs, ys),
+            'p': permutation_p(xs, ys, n_perm=n_perm),
+            'n': len(xs),
+            # Agreement across seeds is the other half of the evidence: a
+            # correlation that changes sign between seeds is not a finding
+            # however significant the pooled number looks.
+            'consistent': all(r > 0 for r in rhos) or all(r < 0 for r in rhos),
+            'per_seed_rho': rhos,
+        }
+    return pooled
+
+
 def find_runs(root):
     """Every seed directory under `root` holding a probe result."""
     found = []
@@ -173,6 +226,18 @@ def main():
             for key in keys:
                 agg[name][key].append(p[key])
 
+    # Significance has to be computed on the pooled data, not averaged.
+    #
+    # The mean of several p-values is not a p-value: three seeds each at p=0.12
+    # average to 0.12 and look like noise, when the same effect appearing three
+    # times in the same direction is strong evidence. Averaging them threw away
+    # exactly the agreement that three seeds were run to establish.
+    #
+    # Pairs are pooled by rank-normalising within each seed first, since the
+    # absolute scale of both predictor and outcome shifts from seed to seed and
+    # only the ordering is comparable.
+    pooled = pool_across_seeds(runs, outcome)
+
     n_pairs = per_run[0]['n_pairs']
     mean_best = sum(r['best'] for r in per_run) / len(per_run)
     mean_random = sum(r['random'] for r in per_run) / len(per_run)
@@ -193,14 +258,27 @@ def main():
 
     summary = {name: {key: sum(v[key]) / len(v[key]) for key in v}
                for name, v in agg.items()}
-    _table(summary, n_pairs, mean_best, mean_random, aggregated=True)
+    # Replace the per-seed averages with the pooled statistics, which are the
+    # ones that mean anything.
+    for name, stats in summary.items():
+        if name in pooled:
+            stats['rho'] = pooled[name]['rho']
+            stats['p'] = pooled[name]['p']
+            stats['consistent'] = pooled[name]['consistent']
+            stats['per_seed_rho'] = pooled[name]['per_seed_rho']
+    _table(summary, n_pairs, mean_best, mean_random, aggregated=True,
+           n_pooled=pooled[next(iter(pooled))]['n'] if pooled else 0)
 
     print()
     _verdict(summary, mean_best, mean_random, n_pairs)
 
 
-def _table(predictors, n_pairs, best, random_value, aggregated=False):
+def _table(predictors, n_pairs, best, random_value, aggregated=False,
+           n_pooled=0):
     label = 'mean rank' if aggregated else 'rank'
+    if n_pooled:
+        print(f'rho and p are POOLED over all {n_pooled} pairs from every seed; '
+              f'rank and gap are per-seed means.')
     print(f'{"predictor":<20} {label:>9} {"outcome":>8} {"gap":>7} '
           f'{"rho":>7} {"p":>7} {"range":>8}')
     print('-' * 78)
@@ -221,6 +299,8 @@ def _table(predictors, n_pairs, best, random_value, aggregated=False):
         # A predictor whose correlation is indistinguishable from chance has
         # not ranked anything, however good its rho looks.
         flag = '' if p['p'] < 0.05 else '  (ns)'
+        if p['p'] < 0.05 and not p.get('consistent', True):
+            flag = '  (flips)'
         print(f'{name:<20} {p["rank"]:>9.1f} {p["value"]:>8.4f} '
               f'{p["gap"]:>7.4f} {p["rho"]:>7.3f} {p["p"]:>7.3f} '
               f'{p["range"]:>8.4f}{flag}{mark}')
@@ -228,7 +308,8 @@ def _table(predictors, n_pairs, best, random_value, aggregated=False):
         print(f'{"  (blind choice)":<20} {n_pairs / 2:>9.1f} '
               f'{random_value:>8.4f} {best - random_value:>7.4f}')
     print()
-    print('(ns) = correlation not distinguishable from chance (permutation p >= 0.05).')
+    print('(ns)    = correlation not distinguishable from chance (p >= 0.05).')
+    print('(flips) = significant overall but changes sign between seeds -- not a finding.')
     print('range = how much the predictor varies across pairs; near zero means it')
     print('        returns the same number for everything and cannot rank at all.')
 
@@ -267,36 +348,44 @@ def _verdict(summary, best, random_value, n_pairs):
     print()
     print('IS THIS CONCLUSIVE?')
     print('-' * 78)
-    flat = globa['range'] < 0.1
     noisy = globa['p'] >= 0.05
+    consistent = globa.get('consistent', True)
 
-    if flat:
-        print(f'NO. GLOBA\'s score spans only {globa["range"]:.4f} across all '
-              f'pairs -- it returns')
-        print('nearly the same number for every couple, so whichever pair comes '
-              'out on top')
-        print('is noise, not a prediction. You cannot judge an instrument that '
-              'reads flat.')
-        print()
-        print('Likely cause: every agent was finetuned from ONE backbone on '
-              'overlapping')
-        print('classes, so their task vectors all point the same way and no pair '
-              'looks')
-        print('orthogonal. Try --subset-mode disjoint, a larger '
-              '--pretrain-budget, or')
-        print('--stop-node none so there is more merging for a predictor to '
-              'predict.')
-    elif noisy:
-        print(f'NOT YET. GLOBA varies enough to rank (range {globa["range"]:.4f}), '
-              f'but its')
-        print(f'correlation (rho {globa["rho"]:+.3f}, p {globa["p"]:.3f}) is '
-              f'within chance. More')
-        print('seeds would settle it.')
+    if noisy:
+        print(f'NOT YET. GLOBA\'s correlation (rho {globa["rho"]:+.3f}, '
+              f'p {globa["p"]:.3f}) is within')
+        print('chance even pooled across seeds. More seeds would settle it.')
+        if globa['range'] < 0.1:
+            print()
+            print(f'Note its score spans only {globa["range"]:.4f} across pairs '
+                  f'-- it returns nearly')
+            print('the same number for every couple, which is the likely reason. '
+                  'Agents all')
+            print('finetuned from ONE backbone have task vectors pointing the '
+                  'same way.')
+    elif not consistent:
+        rhos = ', '.join(f'{r:+.2f}' for r in globa.get('per_seed_rho', []))
+        print(f'NO. The pooled correlation is significant but its SIGN changes '
+              f'between')
+        print(f'seeds ({rhos}), so it is not a stable effect.')
+    elif globa['rho'] > 0:
+        print(f'YES. GLOBA predicts merge quality reliably '
+              f'(rho {globa["rho"]:+.3f}, p {globa["p"]:.3f},')
+        print('same sign in every seed).')
     else:
-        direction = 'predicts' if globa['rho'] > 0 else 'ANTI-predicts'
-        print(f'YES. GLOBA varies across pairs (range {globa["range"]:.4f}) and '
-              f'{direction}')
-        print(f'transfer reliably (rho {globa["rho"]:+.3f}, p {globa["p"]:.3f}).')
+        print(f'YES, BUT BACKWARDS. GLOBA correlates reliably with merge quality '
+              f'(rho')
+        print(f'{globa["rho"]:+.3f}, p {globa["p"]:.3f}, same sign in every seed) '
+              f'-- in the WRONG direction.')
+        print('A HIGHER GLOBA score means a WORSE pair, so taking its argmax, as '
+              'the')
+        print('pre-registered rule does, actively selects bad partners.')
+        print()
+        print('The signal is real. The hypothesis behind it (orthogonal parents '
+              'merge')
+        print('well, conflicting ones merge badly) is inverted. Re-run the pick '
+              'on')
+        print('MINIMUM globa_score before concluding it is useless.')
 
     print()
     print('Reminder: GLOBA reads weights, the merger aligns activations. These')
