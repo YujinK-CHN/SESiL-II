@@ -44,7 +44,8 @@ from sesil.certificate import certify_population
 from sesil.fitness import evaluate_all_classes
 from sesil.merge import extract_children, merge_couple, point_at
 from sesil.population import generation_dir, list_population, read_meta
-from sesil.pretrain import backbone_dir, build_population
+from sesil.pretrain import backbone_dir, build_model, build_population
+from sesil.probe.globa_merge import merge as globa_merge_pair
 from sesil.probe.globa_stats import TYPES, pair_stats
 from sesil.probe.retention import pair_retention
 from sesil.selection import mating_score
@@ -100,11 +101,21 @@ def run_probe(args, budget, data, logger, evaluator=None):
     symmetric = args.stop_node is None and abs(args.merge_bias - 0.5) < 1e-9
 
     n_pairs = args.pop_size * (args.pop_size - 1) // 2
-    per_couple = 1 if symmetric else 2
+    per_couple = (1 if symmetric else 2) if args.probe_merger != 'globa' else 0
+    if args.probe_merger in ('globa', 'both'):
+        per_couple += 1
     print(f'[probe] {args.pop_size} agents -> {n_pairs} pairs -> '
           f'{per_couple * n_pairs} children to evaluate')
-    print(f'[probe] merger under test: {args.merger} '
-          f'(stop-node {args.stop_node if args.stop_node is not None else "none / full merge"})')
+    if args.probe_merger in ('sesil', 'both'):
+        print(f'[probe] merger under test: {args.merger} '
+              f'(stop-node {args.stop_node if args.stop_node is not None else "none / full merge"})')
+    if args.probe_merger in ('globa', 'both'):
+        print(f'[probe] merger under test: globa '
+              f'(preset {args.globa_preset}, head {args.globa_head})')
+    if args.probe_merger == 'both':
+        print(f'[probe] BOTH operators run on identical parents, so the two are '
+              f'directly\n        comparable. Analyse them separately: '
+              f'analyze_probe.py --operator globa')
     if symmetric:
         print(f'[probe] symmetric full merge (--merge-bias 0.5): one child per '
               f'couple,\n        an equal blend of both parents. Outcome metric '
@@ -115,7 +126,8 @@ def run_probe(args, budget, data, logger, evaluator=None):
               f'to one\n        parent. Outcome metric is "transfer" -- how much '
               f'of the OTHER parent\n        a child picks up, since it keeps its '
               f'own almost by construction.')
-    print(f'[probe] GLOBA is the predictor only; it does not produce children.')
+    if args.probe_merger == 'sesil':
+        print(f'[probe] GLOBA is the predictor only; it does not produce children.')
 
     # ---------------------------------------------------------------- stage 1
     population = build_population(args, data, budget, logger)
@@ -161,6 +173,14 @@ def run_probe(args, budget, data, logger, evaluator=None):
         num_classes=args.num_classes,
     )
     cert_by_id = {a: set(c) for a, c in zip(agent_ids, certificates)}
+
+    # Which classes each agent was actually finetuned on. The label-aware head
+    # needs this rather than the certificate: "was this parent trained on this
+    # class" is a fact about the run, while a certificate is a measurement that
+    # moves with --certify-floor. Using the certificate would make the merge
+    # operator itself depend on a thresholding choice.
+    trained_on = {a: read_meta(population_dir, a).get('trained_on', [])
+                  for a in agent_ids}
 
     for agent_id in agent_ids:
         logger.log_train({
@@ -221,24 +241,57 @@ def run_probe(args, budget, data, logger, evaluator=None):
                 'nnz_q': s['nnz_q'],
             })
 
-        # --- the ground truth: the merger SESiL would actually have used ---
+        # --- the ground truth: actually merge the pair and score the child ---
         with torch.no_grad():
-            merge, config = merge_couple((a, b), raw_config, args, train_loader)
-            budget.count_forward_train(FORWARD_TRAIN_PASSES_PER_MERGE)
+            produced = []
 
-            children = extract_children(merge, config, args,
-                                        args.num_classes, train_loader)
+            if args.probe_merger in ('sesil', 'both'):
+                merge, config = merge_couple((a, b), raw_config, args, train_loader)
+                budget.count_forward_train(FORWARD_TRAIN_PASSES_PER_MERGE)
 
-            # At --stop-node none with --merge-bias 0.5 the interpolation
-            # weights are equal, so both children are the same tensors.
-            # Evaluating the second would cost a full pass to reproduce a
-            # number we already have, and would write a duplicate row that
-            # silently double-weights this couple in the correlations.
-            if symmetric:
-                children = children[:1]
-            budget.count_forward_train(len(children))
+                children = extract_children(merge, config, args,
+                                            args.num_classes, train_loader)
 
-            for child_index, (child, n_from_trunk) in enumerate(children):
+                # At --stop-node none with --merge-bias 0.5 the interpolation
+                # weights are equal, so both children are the same tensors.
+                # Evaluating the second would cost a full pass to reproduce a
+                # number we already have, and would write a duplicate row that
+                # silently double-weights this couple in the correlations.
+                if symmetric:
+                    children = children[:1]
+                budget.count_forward_train(len(children))
+
+                for index, (child, n_from_trunk) in enumerate(children):
+                    produced.append((child, index, 'sesil', n_from_trunk,
+                                     merge.compute_transform_time))
+                del merge, config, children
+
+            if args.probe_merger in ('globa', 'both'):
+                # No alignment pass and no activation statistics -- the whole
+                # operator is linear algebra on the task vectors, so it costs
+                # nothing from the data budget. Only the BN recalibration below
+                # touches the training set.
+                t1 = time.time()
+                child_sd = globa_merge_pair(
+                    states[a], states[b], core,
+                    classes_a=trained_on.get(a), classes_b=trained_on.get(b),
+                    preset=args.globa_preset, head=args.globa_head,
+                    eta=args.probe_eta, svd_energy=args.probe_svd_energy,
+                    basis_energy=args.probe_basis_energy,
+                    head_prefix=head_prefix)
+                globa_seconds = time.time() - t1
+
+                child = build_model(args, args.num_classes)
+                child.load_state_dict(child_sd, strict=False)
+                # The child owns neither parent's BatchNorm statistics, so they
+                # have to be recomputed for the network as assembled -- exactly
+                # as extract_children does for the SESiL side, so neither
+                # operator is handicapped.
+                reset_bn_stats(child, train_loader)
+                budget.count_forward_train(1)
+                produced.append((child, 0, 'globa', 0, globa_seconds))
+
+            for child, child_index, operator, n_from_trunk, merge_seconds in produced:
                 per_class, overall = evaluate_all_classes(
                     child, val_loader, args.num_classes)
                 ret = pair_retention(accs[a], accs[b], per_class)
@@ -261,12 +314,17 @@ def run_probe(args, budget, data, logger, evaluator=None):
                 row = {
                     'own': own,
                     'transfer': transfer,
-                    'symmetric': symmetric,
+                    # GLOBA merging always yields ONE child that must carry
+                    # both parents, so it is symmetric whatever --merge-bias
+                    # says about the SESiL side.
+                    'symmetric': symmetric or operator == 'globa',
                     'stage': 'probe_pair',
                     'pair': [a, b],
+                    'operator': operator,
                     'child_index': child_index,
                     'biased_toward': [a, b][child_index],
-                    'merger': args.merger,
+                    'merger': args.merger if operator == 'sesil'
+                              else f'globa_{args.globa_preset}_{args.globa_head}',
                     'trunk_params': n_from_trunk,
 
                     # outcome
@@ -297,12 +355,12 @@ def run_probe(args, budget, data, logger, evaluator=None):
                     'partner_mean_acc': 0.5 * (overalls[a] + overalls[b]),
 
                     'predict_seconds': round(predict_seconds, 4),
-                    'merge_seconds': merge.compute_transform_time,
+                    'merge_seconds': merge_seconds,
                 }
                 rows.append(row)
                 logger.log_train(row)
 
-            del merge, config, children
+            del produced
 
         torch.cuda.empty_cache()
 
@@ -317,7 +375,14 @@ def run_probe(args, budget, data, logger, evaluator=None):
         for row in layer_rows:
             f.write(json.dumps(row, default=float) + '\n')
 
-    summary = _summarise(rows, args)
+    # One summary PER OPERATOR. Summarising them together would rank a couple's
+    # SESiL child against its own GLOBA child as if they were different pairs,
+    # so "rank 3 of 28" would silently become "rank 3 of 56" and mean nothing.
+    operators = sorted({r['operator'] for r in rows})
+    summaries = {op: _summarise([r for r in rows if r['operator'] == op], args)
+                 for op in operators}
+    summary = summaries if len(operators) > 1 else summaries[operators[0]]
+
     with open(os.path.join(args.run_dir, 'probe_summary.json'), 'w') as f:
         json.dump(summary, f, indent=2, default=float)
 
@@ -325,7 +390,10 @@ def run_probe(args, budget, data, logger, evaluator=None):
           f'{time.time() - start:.1f}s')
     print(f'[probe] rows   -> {out_path}')
     print(f'[probe] layers -> {layer_path}  ({len(layer_rows)} rows)')
-    _print_summary(summary)
+    for op in operators:
+        if len(operators) > 1:
+            print(f'\n### operator: {op} ###')
+        _print_summary(summaries[op])
     print(budget.report())
 
     return summary
@@ -340,13 +408,17 @@ def _per_pair(rows):
     """
     by_pair = {}
     for row in rows:
-        key = tuple(row['pair'])
+        # Keyed by operator too: with --probe-merger both, the same couple has
+        # a SESiL child and a GLOBA child, and collapsing them together would
+        # average two different operators into one meaningless number.
+        key = (tuple(row['pair']), row.get('operator', 'sesil'))
         by_pair.setdefault(key, []).append(row)
 
     out = []
-    for key, group in by_pair.items():
+    for (pair, operator), group in by_pair.items():
         merged = dict(group[0])
-        merged['pair'] = list(key)
+        merged['pair'] = list(pair)
+        merged['operator'] = operator
         for field in ('balanced', 'retention_total', 'child_overall',
                       'retention_a', 'retention_b',
                       'distinctive_a', 'distinctive_b',

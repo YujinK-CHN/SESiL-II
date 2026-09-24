@@ -376,6 +376,35 @@ def _add_probe_config(parser):
     group.add_argument('--probe-basis-energy', type=float, default=0.999,
                        help='Energy kept when re-orthogonalising the concatenated '
                             'singular vectors. 1.0 uses the numerical rank.')
+    group.add_argument('--probe-merger', type=str, default='sesil',
+                       choices=['sesil', 'globa', 'both'],
+                       help="Which operator builds the children the probe scores. "
+                            "'sesil' (default) uses --merger, i.e. the operator "
+                            "SESiL would really use; GLOBA only predicts. 'globa' "
+                            'builds them with GLOBA\'s own recombination instead. '
+                            "'both' does each pair twice, so the two operators can "
+                            'be compared on identical parents -- which is the only '
+                            'way to tell a better merge from an easier pair. GLOBA '
+                            'needs no forward passes, so it is the cheaper of the '
+                            'two.')
+    group.add_argument('--globa-preset', type=str, default='single-full',
+                       choices=['average', 'sum', 'orthogonal-full', 'single-full'],
+                       help='Type coefficients for GLOBA merging. '
+                            "'average' is exactly plain weight averaging and is the "
+                            'reference point: a preset that cannot beat it means the '
+                            "cell typing bought nothing. 'single-full' keeps whole "
+                            'any cell only one parent touched and averages only '
+                            'contested ones. Ignored unless --probe-merger uses '
+                            'GLOBA.')
+    group.add_argument('--globa-head', type=str, default='label',
+                       choices=['label', 'average'],
+                       help="How GLOBA merging combines the classifier. 'label' "
+                            'takes each class row from whichever parent was trained '
+                            'on that class, averaging only rows both or neither '
+                            'know. Strongly preferred: agents here get a fresh '
+                            'random classifier each, so averaging two of them halves '
+                            "a trained row into noise. 'average' is the ablation "
+                            'that shows how much that costs.')
     group.add_argument('--probe-layer-weighting', type=str, default='energy',
                        choices=['energy', 'uniform'],
                        help="How ~20 per-layer decompositions collapse into one "
