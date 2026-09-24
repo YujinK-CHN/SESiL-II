@@ -72,9 +72,23 @@ echo "mode    : $RUN_MODE"
 if [[ -n "$GPUS" ]]; then
   # Read by sesil/gpu.py when --device is not given explicitly.
   export SESIL_GPUS="$GPUS"
-  echo "gpus    : $GPUS  (least-loaded claimed per run)"
+  echo "gpus    : $GPUS  (best free one claimed per run)"
 else
   echo "gpus    : all visible"
+fi
+
+# In parallel mode every seed launches at once, so more seeds than GPUs means
+# they stack. sesil/gpu.py refuses past --max-per-gpu, but it does so one run
+# at a time and several minutes in; saying it here costs nothing and stops the
+# whole sweep before any of it starts.
+if [[ "$RUN_MODE" == "parallel" && -n "$GPUS" ]]; then
+  N_GPUS=$(awk -F, '{print NF}' <<< "$GPUS")
+  N_JOBS=$(( ${#SEED_LIST[@]} * ${#METHODS[@]} ))
+  if (( N_JOBS > N_GPUS )); then
+    echo "!! $N_JOBS parallel job(s) but only $N_GPUS GPU(s) in --gpus." >&2
+    echo "   Runs past the first per GPU will stop with a --max-per-gpu error." >&2
+    echo "   Use --run-mode sequential, fewer seeds, or raise --max-per-gpu." >&2
+  fi
 fi
 
 COMMON_ARGS=(--dataset "$DATASET" --budget "$BUDGET" --exp-name "$EXP_NAME")

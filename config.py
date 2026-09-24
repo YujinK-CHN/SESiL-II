@@ -102,11 +102,29 @@ def _add_run_config(parser):
                             'respected as given.')
     group.add_argument('--gpus', type=str, default=None,
                        help="Comma-separated GPU indices this run may use, e.g. '0,1,3'. "
-                            'Each process claims the least-loaded one through lock files '
+                            'Each process claims the best free one through lock files '
                             'in results/.gpu_locks, so several seeds launched together '
                             'spread across devices instead of stacking on cuda:0. Unset '
                             '(or the SESIL_GPUS environment variable) means every visible '
-                            'GPU. Ignored when --device names a device explicitly.')
+                            'GPU. Indices that do not exist on the current machine are '
+                            'warned about and dropped, so the same command works on a '
+                            'one-GPU laptop and an eight-GPU server. Ignored when '
+                            '--device names a device explicitly.')
+    group.add_argument('--strict-gpus', action='store_true',
+                       help='Fail instead of falling back when --gpus names a GPU this '
+                            'machine does not have. Use on a shared server where the '
+                            'other cards belong to somebody else and being quietly '
+                            'moved onto one would be worse than stopping.')
+    group.add_argument('--max-per-gpu', type=int, default=1,
+                       help='How many runs of this scheme may share one GPU. Launching '
+                            'more than this is refused up front with an explanation, '
+                            'rather than becoming an out-of-memory crash minutes into '
+                            'a run. Raise it if a card genuinely fits several.')
+    group.add_argument('--min-free-gb', type=float, default=1.0,
+                       help='Warn when the claimed GPU has less free memory than this. '
+                            'Catches a card another process is already filling, which '
+                            'the lock files cannot see. Warning only -- the run '
+                            'proceeds.')
     group.add_argument('--output-root', type=str, default='./results',
                        help='Root for all run artefacts (checkpoints + csv).')
     group.add_argument('--data-dir', type=str, default='./data',
