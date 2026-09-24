@@ -95,11 +95,26 @@ def run_probe(args, budget, data, logger, evaluator=None):
     """Build a population, screen every pair, measure every merge."""
     _require_shared_core(args)
 
+    # Symmetric merge: one whole-network blend, weighted equally, so a couple
+    # has one distinct child rather than two mirror images.
+    symmetric = args.stop_node is None and abs(args.merge_bias - 0.5) < 1e-9
+
     n_pairs = args.pop_size * (args.pop_size - 1) // 2
+    per_couple = 1 if symmetric else 2
     print(f'[probe] {args.pop_size} agents -> {n_pairs} pairs -> '
-          f'{2 * n_pairs} children to evaluate')
+          f'{per_couple * n_pairs} children to evaluate')
     print(f'[probe] merger under test: {args.merger} '
           f'(stop-node {args.stop_node if args.stop_node is not None else "none / full merge"})')
+    if symmetric:
+        print(f'[probe] symmetric full merge (--merge-bias 0.5): one child per '
+              f'couple,\n        an equal blend of both parents. Outcome metric '
+              f'is "balanced" -- how\n        well ONE model carries both '
+              f'parents.')
+    else:
+        print(f'[probe] asymmetric merge: two children per couple, each leaning '
+              f'to one\n        parent. Outcome metric is "transfer" -- how much '
+              f'of the OTHER parent\n        a child picks up, since it keeps its '
+              f'own almost by construction.')
     print(f'[probe] GLOBA is the predictor only; it does not produce children.')
 
     # ---------------------------------------------------------------- stage 1
@@ -183,6 +198,14 @@ def run_probe(args, budget, data, logger, evaluator=None):
 
             children = extract_children(merge, config, args,
                                         args.num_classes, train_loader)
+
+            # At --stop-node none with --merge-bias 0.5 the interpolation
+            # weights are equal, so both children are the same tensors.
+            # Evaluating the second would cost a full pass to reproduce a
+            # number we already have, and would write a duplicate row that
+            # silently double-weights this couple in the correlations.
+            if symmetric:
+                children = children[:1]
             budget.count_forward_train(len(children))
 
             for child_index, (child, n_from_trunk) in enumerate(children):
@@ -190,7 +213,25 @@ def run_probe(args, budget, data, logger, evaluator=None):
                     child, val_loader, args.num_classes)
                 ret = pair_retention(accs[a], accs[b], per_class)
 
+                # Split retention into the half that is structural and the half
+                # that is earned.
+                #
+                # With --stop-node N a child is the merged trunk plus ONE
+                # parent's remaining layers, so it keeps that parent almost by
+                # construction (measured: 0.93-0.99, near the ceiling for every
+                # pair). What varies -- and what crossover is actually being
+                # asked to deliver -- is how much of the OTHER parent it picks
+                # up. Reporting only the combined figure buries that: the
+                # harmonic mean ends up driven by the transfer term while
+                # looking like it measures balance.
+                own, transfer = ((ret['distinctive_a'], ret['distinctive_b'])
+                                 if child_index == 0 else
+                                 (ret['distinctive_b'], ret['distinctive_a']))
+
                 row = {
+                    'own': own,
+                    'transfer': transfer,
+                    'symmetric': symmetric,
                     'stage': 'probe_pair',
                     'pair': [a, b],
                     'child_index': child_index,
@@ -272,7 +313,8 @@ def _per_pair(rows):
         merged['pair'] = list(key)
         for field in ('balanced', 'retention_total', 'child_overall',
                       'retention_a', 'retention_b',
-                      'distinctive_a', 'distinctive_b'):
+                      'distinctive_a', 'distinctive_b',
+                      'own', 'transfer'):
             merged[field] = sum(g[field] for g in group) / len(group)
         merged.pop('child_index', None)
         merged.pop('child_per_class', None)
@@ -285,6 +327,23 @@ PREDICTORS = (['globa_score', 'mating_score', 'partner_mean_acc', 'cosine',
               + [f'energy_{t}' for t in TYPES])
 
 
+def default_outcome(pairs):
+    """Which measure answers "was this a good pair", given the merge geometry.
+
+    A symmetric full merge produces ONE model that has to carry both parents,
+    so the question is whether it managed that -- 'balanced', the harmonic mean
+    of the two distinctive retentions, which goes to zero if either parent was
+    lost.
+
+    An asymmetric merge produces two children that each lean to one parent and
+    keep it near the ceiling whatever the partner. Ranking on 'balanced' there
+    would mostly be ranking on a constant, so the measure that varies -- and
+    that crossover has to earn -- is 'transfer': how much of the OTHER parent
+    each child picked up.
+    """
+    return 'balanced' if pairs and pairs[0].get('symmetric') else 'transfer'
+
+
 def _summarise(rows, args):
     """Where each predictor's favourite pair lands in the true ranking."""
     pairs = _per_pair(rows)
@@ -292,35 +351,45 @@ def _summarise(rows, args):
     if n < 2:
         return {'n_pairs': n, 'note': 'too few pairs to rank'}
 
-    truth = sorted(pairs, key=lambda r: r['balanced'], reverse=True)
+    outcome = default_outcome(pairs)
+    truth = sorted(pairs, key=lambda r: r[outcome], reverse=True)
     best, worst = truth[0], truth[-1]
-    spread = best['balanced'] - worst['balanced']
+    spread = best[outcome] - worst[outcome]
 
     result = {
         'n_pairs': n,
         'merger': args.merger,
         'seed': args.seed,
         'best_pair': best['pair'],
-        'best_balanced': best['balanced'],
-        'worst_balanced': worst['balanced'],
+        'outcome': outcome,
+        'best_transfer': best[outcome],
+        'worst_transfer': worst[outcome],
         'spread': spread,
-        'median_balanced': truth[n // 2]['balanced'],
+        'median_transfer': truth[n // 2][outcome],
+        'blind': sum(r[outcome] for r in pairs) / n,
+        'mean_own': sum(r['own'] for r in pairs) / n,
+        'zero_transfer_pairs': sum(1 for r in pairs if r[outcome] < 0.01),
         'predictors': {},
     }
 
     for name in PREDICTORS:
         if name not in pairs[0]:
             continue
+        values = [r[name] for r in pairs]
         pick = max(pairs, key=lambda r: r[name])
         rank = next(i for i, r in enumerate(truth) if r['pair'] == pick['pair']) + 1
         result['predictors'][name] = {
             'picked_pair': pick['pair'],
             'rank_of_pick': rank,
             'n_pairs': n,
-            'balanced_of_pick': pick['balanced'],
-            'gap_to_best': best['balanced'] - pick['balanced'],
-            'spearman': _spearman([r[name] for r in pairs],
-                                  [r['balanced'] for r in pairs]),
+            'transfer_of_pick': pick[outcome],
+            'gap_to_best': best[outcome] - pick[outcome],
+            'spearman': _spearman(values, [r[outcome] for r in pairs]),
+            # A predictor that returns nearly the same number for every pair
+            # cannot rank them, whatever its correlation happens to be.
+            'range': max(values) - min(values),
+            'min': min(values),
+            'max': max(values),
         }
     return result
 
@@ -358,20 +427,35 @@ def _print_summary(summary):
         return
     n = summary['n_pairs']
     print()
-    print('=' * 72)
-    print(f'Best pair {summary["best_pair"]} scored {summary["best_balanced"]:.4f}; '
-          f'worst {summary["worst_balanced"]:.4f}  (spread {summary["spread"]:.4f})')
+    print('=' * 78)
+    outcome = summary.get('outcome', 'transfer')
+    if outcome == 'balanced':
+        print('Outcome: balanced -- how well ONE symmetric child carries BOTH '
+              'parents.')
+        print('(Zero means it kept one parent and lost the other entirely.)')
+        verb = 'scored'
+    else:
+        print('Outcome: transfer -- how much of the OTHER parent a child picks up.')
+        print(f'Each child keeps its own parent at {summary["mean_own"]:.3f} on '
+              f'average (structural, near the ceiling).')
+        verb = 'transferred'
+    print(f'Best pair {summary["best_pair"]} {verb} '
+          f'{summary["best_transfer"]:.4f}; worst {summary["worst_transfer"]:.4f}; '
+          f'blind choice {summary["blind"]:.4f}')
+    if summary['zero_transfer_pairs']:
+        print(f'{summary["zero_transfer_pairs"]} of {n} pairs scored ~zero.')
     if summary['spread'] < 0.02:
         print('NOTE: every pair scored about the same, so partner choice barely '
-              'matters here and no predictor can look good or bad for a real '
-              'reason. Treat the ranks below as noise.')
-    print('=' * 72)
-    print(f'{"predictor":<22} {"rank":>8} {"retention":>10} {"gap":>8} {"rho":>7}')
-    print('-' * 72)
+              'matters here.')
+    print('=' * 78)
+    print(f'{"predictor":<20} {"rank":>8} {outcome:>9} {"gap":>8} '
+          f'{"rho":>7} {"range":>8}')
+    print('-' * 78)
     order = sorted(summary['predictors'].items(), key=lambda kv: kv[1]['rank_of_pick'])
     for name, p in order:
         mark = '  <- pre-registered' if name == 'globa_score' else ''
-        print(f'{name:<22} {p["rank_of_pick"]:>4}/{n:<3} '
-              f'{p["balanced_of_pick"]:>10.4f} {p["gap_to_best"]:>8.4f} '
-              f'{p["spearman"]:>7.3f}{mark}')
-    print('=' * 72)
+        print(f'{name:<20} {p["rank_of_pick"]:>4}/{n:<3} '
+              f'{p["transfer_of_pick"]:>9.4f} {p["gap_to_best"]:>8.4f} '
+              f'{p["spearman"]:>7.3f} {p["range"]:>8.4f}{mark}')
+    print('=' * 78)
+    print('Run analyze_probe.py for significance testing across seeds.')

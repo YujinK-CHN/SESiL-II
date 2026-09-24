@@ -242,20 +242,30 @@ def _add_evolution_config(parser):
 
 def _add_merging_config(parser):
     group = parser.add_argument_group('merging')
-    group.add_argument('--stop-node', type=optional_int, default=21,
+    group.add_argument('--stop-node', type=optional_int, default=None,
                        help="Partial-zipping depth: the graph node the merge stops "
-                            "at, beyond which each parent keeps its own head. Pass "
-                            "'none' (or a negative value) to merge the whole network "
-                            "instead. The two modes produce sibling children "
-                            "differently -- see sesil/merge.extract_children.")
-    group.add_argument('--merge-bias', type=float, default=0.7,
+                            "at, beyond which each parent keeps its own head. The "
+                            "default 'none' merges the WHOLE network. Pass an "
+                            'integer (e.g. 21) to merge only up to that node, '
+                            'which on resnet20x4 shares about a third of the '
+                            'tensors and leaves each child mostly one parent. The '
+                            'two modes produce sibling children differently -- see '
+                            'sesil/merge.extract_children.')
+    group.add_argument('--merge-bias', type=float, default=0.5,
                        help='FULL-MERGE ONLY (--stop-node none). How far each child '
                             'leans toward its own parent when the merged weights are '
                             'interpolated. A couple yields one child per parent, so '
-                            'this is what makes them differ. 0.5 makes both children '
-                            'identical; 1.0 makes each child its parent, with none of '
-                            'the merge in it. Ignored when a stop node is set, where '
-                            'the parents\' separate heads supply the asymmetry.')
+                            'this is what makes them differ. '
+                            'NOTE the default 0.5 is the symmetric case: both '
+                            'children are then IDENTICAL, each an equal blend of '
+                            'both parents. That is what you want when the question '
+                            'is how well one model can carry two parents (the '
+                            'probe), but it removes sibling diversity from an '
+                            'evolution run -- raise it above 0.5 for --method '
+                            'sesil. 1.0 makes each child its parent, with none of '
+                            'the merge in it. Ignored when a stop node is set, '
+                            "where the parents' separate heads supply the "
+                            'asymmetry.')
     group.add_argument('--merge-alpha', type=float, default=0.0001,
                        help="ZipIt! alpha ('a'), Section 4.3 of the ZipIt! paper.")
     group.add_argument('--merge-beta', type=float, default=0.075,
@@ -308,6 +318,23 @@ def _add_selection_config(parser):
                        help='Weight on certified classes both already hold.')
     group.add_argument('--max-retries', type=int, default=100,
                        help='Attempts to find reciprocated pairs before giving up.')
+
+
+def _add_subset_config(parser):
+    parser.add_argument('--subset-mode', type=str, default='random',
+                        choices=['random', 'disjoint'],
+                        help="How each agent's training classes are chosen at "
+                             "pretrain. 'random' draws every subset "
+                             'independently and leaves overlap to chance -- the '
+                             "original scheme, and the default so SESiL's "
+                             "behaviour is unchanged. 'disjoint' deals classes "
+                             'round-robin so every class is used about equally '
+                             'often and pairwise overlap is as low as the '
+                             'arithmetic allows. Prefer it for --method probe: '
+                             'agents finetuned from one backbone on largely the '
+                             'same classes have task vectors that all point the '
+                             'same way, which leaves a weight-space predictor '
+                             'nothing to discriminate.')
 
 
 def _add_probe_config(parser):
@@ -377,6 +404,7 @@ def get_config():
     _add_merging_config(parser)
     _add_certificate_config(parser)
     _add_selection_config(parser)
+    _add_subset_config(parser)
     _add_probe_config(parser)
     _add_baseline_config(parser)
     return parser

@@ -19,9 +19,31 @@ matter what GLOBA said".
 import argparse
 import json
 import os
+import random
 from collections import defaultdict
 
-from sesil.probe.driver import PREDICTORS, _per_pair, _spearman
+from sesil.probe.driver import (PREDICTORS, _per_pair, _spearman,
+                                default_outcome)
+
+
+def permutation_p(xs, ys, n_perm=10000, seed=0):
+    """How often chance alone beats the observed rank correlation.
+
+    A predictor can post a respectable rho and still be worthless: with 28
+    pairs, |rho| below about 0.38 is ordinary noise. Shuffling one side and
+    counting how often chance does at least as well puts a number on that
+    without pulling in scipy, and without relying on a normal approximation
+    that is poor at this sample size.
+    """
+    observed = abs(_spearman(xs, ys))
+    rng = random.Random(seed)
+    shuffled = list(ys)
+    hits = 0
+    for _ in range(n_perm):
+        rng.shuffle(shuffled)
+        if abs(_spearman(xs, shuffled)) >= observed:
+            hits += 1
+    return (hits + 1) / (n_perm + 1)
 
 
 def find_runs(root):
@@ -40,6 +62,14 @@ def load(run_dir):
             line = line.strip()
             if line:
                 rows.append(json.loads(line))
+
+    # Results written before 'own'/'transfer' existed still carry everything
+    # needed to derive them, so old runs stay readable without a re-run.
+    for row in rows:
+        if 'transfer' not in row:
+            own_is_a = row['child_index'] == 0
+            row['own'] = row['distinctive_a'] if own_is_a else row['distinctive_b']
+            row['transfer'] = row['distinctive_b'] if own_is_a else row['distinctive_a']
     return rows
 
 
@@ -66,9 +96,11 @@ def evaluate_run(rows, outcome):
         'predictors': {},
     }
 
+    outcomes = [r[outcome] for r in pairs]
     for name in PREDICTORS:
         if name not in pairs[0]:
             continue
+        values = [r[name] for r in pairs]
         pick = max(pairs, key=lambda r: r[name])
         rank = next(i for i, r in enumerate(truth)
                     if r['pair'] == pick['pair']) + 1
@@ -76,7 +108,9 @@ def evaluate_run(rows, outcome):
             'rank': rank,
             'value': pick[outcome],
             'gap': best - pick[outcome],
-            'rho': _spearman([r[name] for r in pairs], [r[outcome] for r in pairs]),
+            'rho': _spearman(values, outcomes),
+            'p': permutation_p(values, outcomes),
+            'range': max(values) - min(values),
             'pair': pick['pair'],
         }
     return out
@@ -86,11 +120,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('root', help='Directory to search for pairs.jsonl.')
-    ap.add_argument('--outcome', default='balanced',
-                    help="What counts as a good merge. 'balanced' (default) is the "
-                         "harmonic mean of the two parents' distinctive retention; "
-                         "'retention_total' counts shared classes too; "
-                         "'child_overall' ignores the parents entirely.")
+    ap.add_argument('--outcome', default=None,
+                    help='What counts as a good merge. Chosen automatically from '
+                         'the merge geometry when omitted: a symmetric full merge '
+                         "uses 'balanced' (one child has to carry both parents), "
+                         "an asymmetric one uses 'transfer' (each child keeps its "
+                         'own parent by construction, so only what it picks up '
+                         "from the other is earned). Override with 'balanced', "
+                         "'transfer', 'own', 'retention_total' or 'child_overall'.")
     ap.add_argument('--per-seed', action='store_true',
                     help='Also print each seed separately.')
     args = ap.parse_args()
@@ -100,13 +137,18 @@ def main():
         raise SystemExit(f'No pairs.jsonl found under {args.root!r}. '
                          f'Run: bash run_probe.sh --dataset cifar10 --seed 0')
 
+    # The right outcome depends on how the children were built, which is
+    # recorded in the rows rather than assumed here.
+    outcome = args.outcome or default_outcome(_per_pair(load(runs[0])))
+
     print(f'{len(runs)} run(s) under {args.root}')
-    print(f'outcome: {args.outcome}\n')
+    print(f'outcome: {outcome}'
+          + ('' if args.outcome else '  (chosen from the merge geometry)') + '\n')
 
     per_run = []
     for run_dir in runs:
         rows = load(run_dir)
-        result = evaluate_run(rows, args.outcome)
+        result = evaluate_run(rows, outcome)
         if result is None:
             print(f'  skipped {run_dir}: too few pairs')
             continue
@@ -124,10 +166,11 @@ def main():
         raise SystemExit('Nothing to aggregate.')
 
     # Aggregate: mean rank, mean gap, mean rho across seeds.
-    agg = defaultdict(lambda: {'rank': [], 'gap': [], 'rho': [], 'value': []})
+    keys = ('rank', 'gap', 'rho', 'value', 'p', 'range')
+    agg = defaultdict(lambda: {k: [] for k in keys})
     for result in per_run:
         for name, p in result['predictors'].items():
-            for key in ('rank', 'gap', 'rho', 'value'):
+            for key in keys:
                 agg[name][key].append(p[key])
 
     n_pairs = per_run[0]['n_pairs']
@@ -158,7 +201,8 @@ def main():
 
 def _table(predictors, n_pairs, best, random_value, aggregated=False):
     label = 'mean rank' if aggregated else 'rank'
-    print(f'{"predictor":<20} {label:>10} {"retention":>10} {"gap":>8} {"rho":>7}')
+    print(f'{"predictor":<20} {label:>9} {"outcome":>8} {"gap":>7} '
+          f'{"rho":>7} {"p":>7} {"range":>8}')
     print('-' * 78)
 
     order = sorted(predictors.items(), key=lambda kv: kv[1]['gap'])
@@ -166,17 +210,27 @@ def _table(predictors, n_pairs, best, random_value, aggregated=False):
     for name, p in order:
         # The blind-choice reference sits wherever its value falls.
         if not printed_random and p['value'] < random_value:
-            print(f'{"  (blind choice)":<20} {n_pairs / 2:>10.1f} '
-                  f'{random_value:>10.4f} {best - random_value:>8.4f} '
-                  f'{0.0:>7.3f}')
+            print(f'{"  (blind choice)":<20} {n_pairs / 2:>9.1f} '
+                  f'{random_value:>8.4f} {best - random_value:>7.4f}')
             printed_random = True
-        mark = '  <- pre-registered' if name == 'globa_score' else ''
-        mark = '  <- SESiL incumbent' if name == 'mating_score' else mark
-        print(f'{name:<20} {p["rank"]:>10.1f} {p["value"]:>10.4f} '
-              f'{p["gap"]:>8.4f} {p["rho"]:>7.3f}{mark}')
+        mark = ''
+        if name == 'globa_score':
+            mark = '  <- pre-registered'
+        elif name == 'mating_score':
+            mark = '  <- SESiL incumbent'
+        # A predictor whose correlation is indistinguishable from chance has
+        # not ranked anything, however good its rho looks.
+        flag = '' if p['p'] < 0.05 else '  (ns)'
+        print(f'{name:<20} {p["rank"]:>9.1f} {p["value"]:>8.4f} '
+              f'{p["gap"]:>7.4f} {p["rho"]:>7.3f} {p["p"]:>7.3f} '
+              f'{p["range"]:>8.4f}{flag}{mark}')
     if not printed_random:
-        print(f'{"  (blind choice)":<20} {n_pairs / 2:>10.1f} '
-              f'{random_value:>10.4f} {best - random_value:>8.4f} {0.0:>7.3f}')
+        print(f'{"  (blind choice)":<20} {n_pairs / 2:>9.1f} '
+              f'{random_value:>8.4f} {best - random_value:>7.4f}')
+    print()
+    print('(ns) = correlation not distinguishable from chance (permutation p >= 0.05).')
+    print('range = how much the predictor varies across pairs; near zero means it')
+    print('        returns the same number for everything and cannot rank at all.')
 
 
 def _verdict(summary, best, random_value, n_pairs):
@@ -190,8 +244,8 @@ def _verdict(summary, best, random_value, n_pairs):
     print('VERDICT')
     print('-' * 78)
     print(f'GLOBA picked pair {globa["rank"]:.1f} of {n_pairs} on average, '
-          f'giving up {globa["gap"]:.4f} retention.')
-    print(f'Choosing blindly would give up {blind_gap:.4f}.')
+          f'getting {globa["value"]:.4f} and giving up {globa["gap"]:.4f}.')
+    print(f'Choosing blindly gets {random_value:.4f}, giving up {blind_gap:.4f}.')
 
     if globa['gap'] < blind_gap * 0.5:
         print('-> GLOBA beats blind choice clearly.')
@@ -203,12 +257,46 @@ def _verdict(summary, best, random_value, n_pairs):
     if incumbent is not None:
         print(f"SESiL's existing rule gives up {incumbent['gap']:.4f}.")
         if globa['gap'] < incumbent['gap']:
-            print('-> GLOBA beats it: worth adopting for mate selection.')
+            print('-> GLOBA beats it.')
         elif globa['gap'] > incumbent['gap']:
-            print('-> GLOBA loses to it: real signal or not, we already have '
-                  'something better.')
+            print('-> GLOBA loses to it.')
         else:
             print('-> They tie.')
+
+    # Whether that verdict is worth anything at all.
+    print()
+    print('IS THIS CONCLUSIVE?')
+    print('-' * 78)
+    flat = globa['range'] < 0.1
+    noisy = globa['p'] >= 0.05
+
+    if flat:
+        print(f'NO. GLOBA\'s score spans only {globa["range"]:.4f} across all '
+              f'pairs -- it returns')
+        print('nearly the same number for every couple, so whichever pair comes '
+              'out on top')
+        print('is noise, not a prediction. You cannot judge an instrument that '
+              'reads flat.')
+        print()
+        print('Likely cause: every agent was finetuned from ONE backbone on '
+              'overlapping')
+        print('classes, so their task vectors all point the same way and no pair '
+              'looks')
+        print('orthogonal. Try --subset-mode disjoint, a larger '
+              '--pretrain-budget, or')
+        print('--stop-node none so there is more merging for a predictor to '
+              'predict.')
+    elif noisy:
+        print(f'NOT YET. GLOBA varies enough to rank (range {globa["range"]:.4f}), '
+              f'but its')
+        print(f'correlation (rho {globa["rho"]:+.3f}, p {globa["p"]:.3f}) is '
+              f'within chance. More')
+        print('seeds would settle it.')
+    else:
+        direction = 'predicts' if globa['rho'] > 0 else 'ANTI-predicts'
+        print(f'YES. GLOBA varies across pairs (range {globa["range"]:.4f}) and '
+              f'{direction}')
+        print(f'transfer reliably (rho {globa["rho"]:+.3f}, p {globa["p"]:.3f}).')
 
     print()
     print('Reminder: GLOBA reads weights, the merger aligns activations. These')

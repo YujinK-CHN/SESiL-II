@@ -182,6 +182,49 @@ def backbone_cost(path):
 # Phase B
 # --------------------------------------------------------------------------- #
 
+def class_subsets(args, num_classes):
+    """Which classes each agent is trained on, per --subset-mode.
+
+    'random' draws each agent's subset independently. That is the original
+    scheme, and it leaves overlap to chance: with 8 agents taking 3 of 10
+    classes, some couples end up nearly identical and others nearly disjoint,
+    but nothing controls the distribution and it changes with the seed.
+
+    'disjoint' deals classes round-robin from repeatedly reshuffled
+    permutations instead. Every class is used about equally often and pairwise
+    overlap is as low as the arithmetic allows, so agents genuinely specialise.
+    This matters for anything that reads the *weights*: agents finetuned from
+    one backbone on largely the same classes produce task vectors that all
+    point the same way, and a weight-space statistic then returns nearly the
+    same number for every couple -- it cannot rank what does not differ.
+    """
+    rng = np.random.default_rng(args.seed)
+    k = args.classes_per_model
+
+    if getattr(args, 'subset_mode', 'random') == 'random':
+        return [sorted(int(c) for c in train_test_split(
+            np.arange(num_classes), train_size=k)[0])
+            for _ in range(args.pop_size)]
+
+    if k > num_classes:
+        raise ValueError(f'--classes-per-model {k} exceeds {num_classes} classes')
+
+    subsets, pool = [], []
+    for _ in range(args.pop_size):
+        chosen = []
+        while len(chosen) < k:
+            if not pool:
+                pool = list(rng.permutation(num_classes))
+            nxt = pool.pop()
+            # Refill rather than repeat: an agent never gets a class twice.
+            if nxt in chosen:
+                spare = [c for c in range(num_classes) if c not in chosen]
+                nxt = int(rng.choice(spare))
+            chosen.append(int(nxt))
+        subsets.append(sorted(chosen))
+    return subsets
+
+
 def build_population(args, data, budget, logger=None):
     """Phase A then phase B: one backbone, then --pop-size specialists.
 
@@ -209,11 +252,10 @@ def build_population(args, data, budget, logger=None):
     val_loader = data.val_loader()
     start = time.time()
 
+    subsets = class_subsets(args, data.num_classes)
+
     for individual in range(args.pop_size):
-        # A random subset of class ids; the discarded half is not used.
-        split, _ = train_test_split(
-            np.arange(data.num_classes), train_size=args.classes_per_model)
-        split = sorted(int(c) for c in split)
+        split = subsets[individual]
 
         model = build_model(args, data.num_classes)
         if backbone is not None:
