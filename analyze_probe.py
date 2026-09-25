@@ -610,8 +610,18 @@ def main():
 
     # The right outcome depends on how the children were built, which is
     # recorded in the rows rather than assumed here.
-    outcome = args.outcome or default_outcome(
-        _per_pair(only(load(runs[0]), operator)))
+    #
+    # Read it from the first run that actually HAS children for this operator.
+    # Pointing at a directory holding several conditions can otherwise land on
+    # one with no rows for the chosen operator, and an empty list silently
+    # falls back to the wrong metric -- wrong numbers, no warning.
+    sample = next((pairs for pairs in
+                   (_per_pair(only(load(r), operator)) for r in runs) if pairs),
+                  [])
+    if not sample:
+        raise SystemExit(f'No {operator!r} children found in any run under '
+                         f'{args.root!r}.')
+    outcome = args.outcome or default_outcome(sample)
 
     print(f'{len(runs)} run(s) under {args.root}')
     if len(available) > 1:

@@ -497,7 +497,16 @@ def run_dir(args):
     if args.method == 'sesil':
         leaf = args.merger
     elif args.method == 'probe':
-        leaf = f'probe_{args.merger}'
+        # Named for what actually produced the children, not for --merger,
+        # which is left at its default and never used when only GLOBA merges.
+        # A folder called probe_permute holding no permute children is a trap.
+        globa = f'globa-{args.globa_preset}-{args.globa_head}'
+        if args.probe_merger == 'globa':
+            leaf = f'probe_{globa}'
+        elif args.probe_merger == 'both':
+            leaf = f'probe_{args.merger}+{globa}'
+        else:
+            leaf = f'probe_{args.merger}'
     else:
         leaf = f'baseline_{args.baseline_mode}'
     return os.path.join(args.output_root, args.exp_name, args.dataset, leaf,
