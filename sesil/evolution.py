@@ -48,14 +48,13 @@ from sesil.certificate import (
     certify_population,
     coverage,
     inherit,
-    strength_matrix,
     training_classes,
 )
 from sesil.fitness import evaluate_all_classes, summarise
 from sesil.merge import extract_children, merge_couple, point_at
 from sesil.mutation import mutate
 from sesil.population import generation_dir, list_population, save_agent
-from sesil.selection import select_mates
+from sesil.selection import select_mates, strength_matrix
 
 
 def _load_agent(agent_id, raw_config, data, budget):

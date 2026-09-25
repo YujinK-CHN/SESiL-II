@@ -27,6 +27,35 @@ import numpy as np
 # Mating score
 # --------------------------------------------------------------------------- #
 
+# --------------------------------------------------------------------------- #
+# Per-class weights (--mate-score)
+# --------------------------------------------------------------------------- #
+# These decide what a certified class is WORTH to a chooser. That is a
+# selection concern, not a certification one: certification decides WHICH
+# classes an agent holds, and nothing here can change that set.
+
+def uniform_strength(num_agents, num_classes):
+    """All classes weighted equally -- the pure-certificate scoring mode.
+
+    Mate choice determines the offspring's inherited certificate, which is the
+    union of the parents' certificate *sets*; accuracy never enters that union.
+    Scoring the set directly makes the objective and the outcome the same
+    object.
+    """
+    return [[1.0] * num_classes for _ in range(num_agents)]
+
+
+def strength_matrix(mode, per_class_accuracy, num_classes):
+    """Per-class weights used by mate selection, chosen by --mate-score."""
+    if mode == 'count':
+        return uniform_strength(len(per_class_accuracy), num_classes)
+    if mode == 'accuracy':
+        return [list(row) for row in per_class_accuracy]
+    raise ValueError(
+        f"Unknown mate-score mode {mode!r}; expected 'count' or 'accuracy'."
+    )
+
+
 def mating_score(cert_a, cert_b, strength_b,
                  weight_extra=1.0, weight_common=0.1):
     """How much A values B as a mate.
@@ -43,9 +72,6 @@ def mating_score(cert_a, cert_b, strength_b,
         accuracy  B's raw per-class accuracy. Prefers strong certificate
                   holders, but discriminates only inside an already-selected
                   band and flattens as the population saturates.
-        rank      B's population percentile on the class. Scale-free, so it
-                  keeps separating agents late in a run when accuracies have
-                  converged.
 
     Directional by construction: score(A, B) != score(B, A).
     """

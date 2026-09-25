@@ -62,64 +62,6 @@ def certify_population(per_class_accuracy, top_frac, floor, num_classes):
     return certificates
 
 
-def rank_strength(per_class_accuracy, num_classes):
-    """Population percentile of each agent on each class.
-
-    strength[i][c] = 1.0 for the best agent on class c, falling linearly to
-    near 0 for the worst. This is the same quantity certification thresholds
-    on, so `--mate-score rank` and the granting rule share one notion of
-    proficiency.
-
-    Scale-free by construction, which is the point: raw accuracies converge as
-    the population improves, so weighting by them flattens out late in a run,
-    while ranks stay just as informative at generation 100 as at generation 1.
-
-    Note the range is compressed among certified agents -- they are by
-    definition the top slice, so with top_frac 0.3 of 10 agents their strengths
-    are 1.0, 0.9, 0.8. That is intended: it separates certificate holders
-    without letting one dominate.
-    """
-    n_agents = len(per_class_accuracy)
-    strengths = [[0.0] * num_classes for _ in range(n_agents)]
-    if n_agents == 0:
-        return strengths
-
-    for c in range(num_classes):
-        ranked = sorted(
-            range(n_agents),
-            key=lambda i: per_class_accuracy[i][c],
-            reverse=True,
-        )
-        for position, agent in enumerate(ranked):
-            strengths[agent][c] = (n_agents - position) / n_agents
-
-    return strengths
-
-
-def uniform_strength(num_agents, num_classes):
-    """All classes weighted equally -- the pure-certificate scoring mode.
-
-    Mate choice determines the offspring's inherited certificate, which is the
-    union of the parents' certificate *sets*; accuracy never enters that union.
-    Scoring the set directly makes the objective and the outcome the same
-    object.
-    """
-    return [[1.0] * num_classes for _ in range(num_agents)]
-
-
-def strength_matrix(mode, per_class_accuracy, num_classes):
-    """Per-class weights used by mate selection, chosen by --mate-score."""
-    if mode == 'count':
-        return uniform_strength(len(per_class_accuracy), num_classes)
-    if mode == 'accuracy':
-        return [list(row) for row in per_class_accuracy]
-    if mode == 'rank':
-        return rank_strength(per_class_accuracy, num_classes)
-    raise ValueError(
-        f"Unknown mate-score mode {mode!r}; expected 'count', 'accuracy' or 'rank'."
-    )
-
-
 def training_classes(certificate, num_classes, is_loner=False, rng=None):
     """Which classes an agent may actually be finetuned on this generation.
 

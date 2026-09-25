@@ -350,7 +350,7 @@ def _add_certificate_config(parser):
 def _add_selection_config(parser):
     group = parser.add_argument_group('selection')
     group.add_argument('--mate-score', type=str, default='count',
-                       choices=['count', 'accuracy', 'rank'],
+                       choices=['count', 'accuracy'],
                        help="What a certified class is worth when scoring a mate. "
                             "'count': all certified classes weigh the same -- the pure "
                             "certificate, and the default, because mate choice decides "
@@ -360,10 +360,13 @@ def _add_selection_config(parser):
                             "prefers strong certificate holders but discriminates only "
                             "within an already-selected band and flattens as the "
                             "population saturates. "
-                            "'rank': weigh by the mate's population percentile on the "
-                            "class; scale-free, so it keeps separating agents late in a "
-                            "run. Switching between these is the ablation for whether "
-                            "strength-weighting helps at all.")
+                            "A 'rank' mode (population percentile per class) was "
+                            "removed: certification already applies rank AND floor to "
+                            "decide WHICH classes count, so rank only re-weighted "
+                            "inside that set, and among certified holders the range "
+                            "compresses to roughly 1.0/0.875/0.75. Measured against "
+                            "'count' on real populations it correlated at rho 0.895 -- "
+                            "a tie-breaker, not a distinct operator.")
     group.add_argument('--weight-extra', type=float, default=1.0,
                        help='Weight on certified classes the mate has and the chooser lacks.')
     group.add_argument('--weight-common', type=float, default=0.1,
