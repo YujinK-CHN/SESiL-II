@@ -197,6 +197,23 @@ def _add_pretrain_config(parser):
                             "trains on all classes WITH labels -- not self-supervised, and "
                             "included as the control that separates 'a shared backbone "
                             "helps' from 'self-supervision helps'.")
+    group.add_argument('--phase-b-freeze', type=float, default=0.0,
+                       help='SSL MODE ONLY. Fraction of each agent\'s phase-B '
+                            'budget spent with the backbone FROZEN, training only '
+                            'the freshly random classifier, before unfreezing for '
+                            'the rest. 0.0 (default) is the original scheme: '
+                            'everything trains from the first step, and a random '
+                            "head's large uninformative gradients flow straight "
+                            'into a backbone that cost most of the pretrain '
+                            'budget. That matters here beyond feature damage -- '
+                            'the backbone is the shared basis that makes merging '
+                            'work, so drift away from it is exactly what a later '
+                            'merge has to reconcile (measured: 15.2% drift in '
+                            '1.25 epochs). Higher values keep agents closer to '
+                            'the shared basis and easier to merge, at the cost of '
+                            'specialising less. The warmup is charged at the full '
+                            'rate even though a head-only backward is cheaper, '
+                            'which is conservative.')
     group.add_argument('--phase-a-cost-multiplier', type=float, default=None,
                        help='Epoch-equivalents charged per image in phase A. Leave unset '
                             'and it defaults to the forward passes per image the objective '

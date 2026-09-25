@@ -103,6 +103,35 @@ def reset_classifier(model):
     return model
 
 
+def set_backbone_trainable(model, trainable):
+    """Freeze or unfreeze everything except the classifier.
+
+    Used for the phase-B warmup. An agent starts with a randomly initialised
+    head, and a random head produces large, uninformative gradients that flow
+    straight back into a backbone that cost most of the pretrain budget to
+    build. Holding the backbone still until the head has something to say keeps
+    those gradients off it.
+
+    That matters more here than in ordinary transfer learning, because the
+    backbone is not only a feature extractor -- it is the SHARED BASIS that
+    makes merging work. Agents finetuned from one backbone stay in the same
+    loss basin, so alignment is near-identity and crossover destroys little.
+    Every unit of backbone drift is drift away from that basis, which is
+    exactly the task vector a merge then has to reconcile.
+
+    Returns the number of frozen parameter tensors.
+    """
+    head = classifier_name(model)
+    frozen = 0
+    for name, param in model.named_parameters():
+        if name.startswith(head + '.'):
+            param.requires_grad_(True)
+        else:
+            param.requires_grad_(trainable)
+            frozen += int(not trainable)
+    return frozen
+
+
 def _iterate_for(loader, sample_budget, with_labels):
     """Yield batches until `sample_budget` images have been presented.
 

@@ -48,6 +48,7 @@ from sesil.population import list_population, save_agent
 from sesil.ssl import (
     get_objective,
     reset_classifier,
+    set_backbone_trainable,
     uses_labels,
     views_per_image,
 )
@@ -274,8 +275,25 @@ def build_population(args, data, budget, logger=None):
         print(f'[{label}] {individual + 1}/{args.pop_size} on classes {split}  '
               f'{sample_budget} presentations over {n_available} samples')
 
+        # Optional warmup with the backbone held still. See
+        # sesil.ssl.set_backbone_trainable for why this matters more here than
+        # in ordinary transfer learning.
+        #
+        # The warmup is charged at the full sample-presentation rate even
+        # though a head-only backward pass is cheaper. That is deliberate and
+        # conservative: overcharging can only understate the benefit, so a
+        # warmup that still wins is not winning on accounting.
+        warmup = int(round(sample_budget * getattr(args, 'phase_b_freeze', 0.0)))
+        if backbone is not None and warmup > 0:
+            n_frozen = set_backbone_trainable(model, False)
+            model, _ = mutate(model, train_loader, val_loader,
+                              sample_budget=warmup)
+            set_backbone_trainable(model, True)
+            print(f'[{label}] warmup: {warmup} presentations with '
+                  f'{n_frozen} backbone tensors frozen')
+
         model, final_acc = mutate(model, train_loader, val_loader,
-                                  sample_budget=sample_budget)
+                                  sample_budget=sample_budget - warmup)
         print(f'[{label}] val accuracy: {final_acc}')
 
         meta = {
