@@ -494,19 +494,26 @@ def parse_int_list(value):
 
 def run_dir(args):
     """Root for this run's artefacts, kept separate per method/config/seed."""
+    # The classifier head is part of what produced the child, so it has to be
+    # part of the path. Without it a --merge-head label run lands on top of the
+    # averaged-head run of the same merger and silently destroys it -- the two
+    # differ in exactly the variable under test.
+    head = '_labelhead' if getattr(args, 'merge_head', 'average') == 'label' else ''
+
     if args.method == 'sesil':
-        leaf = args.merger
+        leaf = f'{args.merger}{head}'
     elif args.method == 'probe':
         # Named for what actually produced the children, not for --merger,
         # which is left at its default and never used when only GLOBA merges.
         # A folder called probe_permute holding no permute children is a trap.
         globa = f'globa-{args.globa_preset}-{args.globa_head}'
         if args.probe_merger == 'globa':
+            # GLOBA builds its own head, so --merge-head does not apply.
             leaf = f'probe_{globa}'
         elif args.probe_merger == 'both':
-            leaf = f'probe_{args.merger}+{globa}'
+            leaf = f'probe_{args.merger}{head}+{globa}'
         else:
-            leaf = f'probe_{args.merger}'
+            leaf = f'probe_{args.merger}{head}'
     else:
         leaf = f'baseline_{args.baseline_mode}'
     return os.path.join(args.output_root, args.exp_name, args.dataset, leaf,
