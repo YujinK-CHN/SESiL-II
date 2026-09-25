@@ -102,6 +102,65 @@ def offspring_state_dict(merge, head_index):
     return state_dict, n_from_trunk
 
 
+def parent_heads_in_merged_basis(merge, args):
+    """Each parent's classifier, expressed in the MERGED feature space.
+
+    A parent's own classifier cannot be spliced into a child directly: after a
+    permute or zip the trunk emits features in a different basis, so parent i's
+    raw rows expect inputs that no longer exist. These are the parents' rows
+    after the same transformation the merge applied, which is what makes them
+    safe to mix.
+
+    Full merge: asking for an interpolation that puts all the weight on one
+    parent returns that parent alone, transformed.
+    Partial zip: head_models[i] IS parent i in the merged basis already.
+    """
+    n_parents = len(merge.graphs)
+    if args.stop_node is None:
+        return [merge.get_merged_state_dict(
+                    interp_w=[1.0 if j == i else 0.0 for j in range(n_parents)])
+                for i in range(n_parents)]
+    return [merge.head_models[i].state_dict() for i in range(n_parents)]
+
+
+def apply_label_head(state_dict, parent_heads, parent_classes,
+                     head_prefix, num_classes):
+    """Rebuild the classifier row by row, from the parent that knows the class.
+
+    Row c of the classifier answers "does this look like class c". A parent
+    trained without class c did not leave that row untouched -- class c never
+    appeared as a target, so training pushed the row DOWN. It is an
+    anti-detector, and averaging it with the other parent's real detector
+    cancels part of the signal and halves what survives. Measured on the probe
+    data, parents' rows for a class only one of them knows sit at cosine
+    -0.072: actively opposed, not merely unrelated.
+
+    So a class exactly one parent knows takes that parent's row whole. Rows
+    both parents know, or neither does, are left as the merge produced them --
+    there is no better-informed choice available.
+
+    Returns the number of rows taken from a single parent, which is zero when
+    the parents' class sets are identical and there is nothing to disentangle.
+    """
+    replaced = 0
+    for key, tensor in list(state_dict.items()):
+        if not key.startswith(head_prefix) or not tensor.is_floating_point():
+            continue
+        # Both weight [C, F] and bias [C] are indexed by class on axis 0.
+        if tensor.shape[0] != num_classes:
+            continue
+
+        rebuilt = tensor.detach().clone()
+        for class_id in range(num_classes):
+            owners = [i for i, classes in enumerate(parent_classes)
+                      if class_id in classes]
+            if len(owners) == 1 and key in parent_heads[owners[0]]:
+                rebuilt[class_id] = parent_heads[owners[0]][key][class_id]
+                replaced += 1
+        state_dict[key] = rebuilt
+    return replaced
+
+
 def interpolation_weights(n_parents, child_index, bias):
     """Weights leaning a full-merge child toward parent `child_index`.
 
@@ -113,7 +172,8 @@ def interpolation_weights(n_parents, child_index, bias):
     return [bias if i == child_index else rest for i in range(n_parents)]
 
 
-def extract_children(merge, config, args, num_classes, train_loader):
+def extract_children(merge, config, args, num_classes, train_loader,
+                     parent_classes=None):
     """Standalone child models from a completed merge -- one per parent.
 
     A couple always yields as many children as it has parents, so the
@@ -133,9 +193,17 @@ def extract_children(merge, config, args, num_classes, train_loader):
     finetuned and saved is one and the same object.
     """
     from sesil.pretrain import build_model
+    from sesil.ssl import classifier_name
 
     n_parents = len(merge.graphs)
     children = []
+
+    # Only computed when it will be used: the extra get_merged_state_dict calls
+    # are cheap but not free, and they are pointless in 'average' mode.
+    use_label_head = (getattr(args, 'merge_head', 'average') == 'label'
+                      and parent_classes is not None)
+    parent_heads = (parent_heads_in_merged_basis(merge, args)
+                    if use_label_head else None)
 
     for child_index in range(n_parents):
         child = build_model(args, num_classes)
@@ -147,13 +215,19 @@ def extract_children(merge, config, args, num_classes, train_loader):
         else:
             state_dict, n_from_trunk = offspring_state_dict(merge, child_index)
 
+        rows_from_one_parent = 0
+        if use_label_head:
+            rows_from_one_parent = apply_label_head(
+                state_dict, parent_heads, parent_classes,
+                classifier_name(child) + '.', num_classes)
+
         child.load_state_dict(state_dict, strict=False)
 
         # The child owns neither the composite's nor a parent's BN statistics,
         # so they have to be recomputed for the model as assembled.
         reset_bn_stats(child, train_loader)
 
-        children.append((child, n_from_trunk))
+        children.append((child, n_from_trunk, rows_from_one_parent))
 
     return children
 

@@ -163,12 +163,20 @@ def breed(pairs, loners, population_info, models, raw_config, args, data,
         merge, config = merge_couple(pair, raw_config, args, train_loader)
         budget.count_forward_train(FORWARD_TRAIN_PASSES_PER_MERGE)
 
-        children = extract_children(merge, config, args, args.num_classes, train_loader)
+        # The parents' certificates decide which classifier rows the child
+        # inherits whole under --merge-head label. The certificate is the right
+        # set here rather than what each parent last trained on: it is measured
+        # proficiency, and the child's own inherited certificate is the union of
+        # these two, so the head and the licence agree about what the child can
+        # do.
+        parent_certs = [by_id[p]['Certificate'] for p in pair]
+        children = extract_children(merge, config, args, args.num_classes,
+                                    train_loader, parent_classes=parent_certs)
         budget.count_forward_train(len(children))   # BN recalibration per child
 
         cert = inherit([by_id[p]['Certificate'] for p in pair])
 
-        for head_index, (child, n_from_trunk) in enumerate(children):
+        for head_index, (child, n_from_trunk, label_rows) in enumerate(children):
             # Evaluate the model that will actually be saved, not the composite.
             per_class, overall = evaluate_all_classes(child, val_loader, args.num_classes)
 
@@ -179,6 +187,9 @@ def breed(pairs, loners, population_info, models, raw_config, args, data,
                 'parents': list(pair),
                 'head': head_index,
                 'trunk_params': n_from_trunk,
+                # 0 in 'average' mode; otherwise how many classifier rows were
+                # taken whole from the single parent certified for that class.
+                'label_head_rows': label_rows,
                 'certificate': sorted(cert),
                 'val_overall': overall,
                 'val_per_class': [round(v, 5) for v in per_class],

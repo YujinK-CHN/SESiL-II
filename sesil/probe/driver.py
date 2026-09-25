@@ -249,8 +249,9 @@ def run_probe(args, budget, data, logger, evaluator=None):
                 merge, config = merge_couple((a, b), raw_config, args, train_loader)
                 budget.count_forward_train(FORWARD_TRAIN_PASSES_PER_MERGE)
 
-                children = extract_children(merge, config, args,
-                                            args.num_classes, train_loader)
+                children = extract_children(
+                    merge, config, args, args.num_classes, train_loader,
+                    parent_classes=[cert_by_id[a], cert_by_id[b]])
 
                 # At --stop-node none with --merge-bias 0.5 the interpolation
                 # weights are equal, so both children are the same tensors.
@@ -261,7 +262,7 @@ def run_probe(args, budget, data, logger, evaluator=None):
                     children = children[:1]
                 budget.count_forward_train(len(children))
 
-                for index, (child, n_from_trunk) in enumerate(children):
+                for index, (child, n_from_trunk, label_rows) in enumerate(children):
                     produced.append((child, index, 'sesil', n_from_trunk,
                                      merge.compute_transform_time))
                 del merge, config, children

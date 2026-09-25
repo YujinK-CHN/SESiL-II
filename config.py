@@ -284,6 +284,23 @@ def _add_merging_config(parser):
                             'the merge in it. Ignored when a stop node is set, '
                             "where the parents' separate heads supply the "
                             'asymmetry.')
+    group.add_argument('--merge-head', type=str, default='average',
+                       choices=['average', 'label'],
+                       help="How crossover builds the child's classifier. "
+                            "'average' (default, the original behaviour) mixes "
+                            'both parents row by row. That is destructive here: '
+                            'a parent never trained on class c has had that row '
+                            'pushed DOWN by training, so it is an anti-detector, '
+                            "and averaging it with the other parent's real "
+                            'detector cancels part of the signal. Measured on the '
+                            'probe data, such rows sit at cosine -0.072 -- opposed, '
+                            "not merely unrelated. 'label' instead takes each "
+                            'class row whole from whichever parent is certified '
+                            'for that class, averaging only rows both or neither '
+                            'hold. In the probe this doubled the average merged '
+                            'child (0.28 -> 0.58), a larger effect than perfect '
+                            'mate selection would buy. Left off by default so the '
+                            'two can be compared on equal terms.')
     group.add_argument('--merge-alpha', type=float, default=0.0001,
                        help="ZipIt! alpha ('a'), Section 4.3 of the ZipIt! paper.")
     group.add_argument('--merge-beta', type=float, default=0.075,
