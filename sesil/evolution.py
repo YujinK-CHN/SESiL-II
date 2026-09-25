@@ -144,14 +144,117 @@ def evaluate_and_certify(agent_ids, raw_config, args, data, budget, logger, gene
     return population_info, models
 
 
+def _breed_globa(pairs, loners, population_info, models, args, data,
+                 budget, logger, generation, core):
+    """Crossover with GLOBA's own asymmetric operator.
+
+    Each couple is merged twice, swapping which parent is the base, so the two
+    children lean to different parents by construction. No alignment pass and
+    no activation statistics are needed -- the operator is linear algebra on
+    the task vectors -- so the only training data touched is the BatchNorm
+    recalibration each child needs.
+    """
+    from sesil.globa_merge import merge as globa_merge
+    from sesil.pretrain import build_model
+    from sesil.ssl import classifier_name
+
+    if core is None:
+        raise SystemExit(
+            '--merger globa requires --pretrain-mode ssl.\n'
+            'GLOBA merges task vectors (agent - core), and the core is the '
+            'phase-A backbone. Without one there is no shared origin.')
+
+    by_id = {p['Model Name']: p for p in population_info}
+    model_by_id = dict(zip([p['Model Name'] for p in population_info], models))
+    head_prefix = classifier_name(models[0]) + '.'
+
+    val_loader = data.val_loader()
+    train_loader = data.train_loader()
+    offspring = []
+
+    states = {name: {k: v.detach().cpu() for k, v in m.state_dict().items()}
+              for name, m in model_by_id.items()}
+
+    for pair in tqdm(pairs, desc=f'Gen {generation}: merging couples (globa)'):
+        cert = inherit([by_id[p]['Certificate'] for p in pair])
+
+        # Twice, swapping base and donor: two children, one leaning each way.
+        for head_index, (base, donor) in enumerate((pair, tuple(reversed(pair)))):
+            start = time.time()
+            child_sd = globa_merge(
+                states[base], states[donor], core,
+                classes_base=by_id[base]['Certificate'],
+                classes_donor=by_id[donor]['Certificate'],
+                preset=args.globa_preset, head=args.merge_head,
+                eta=args.probe_eta, svd_energy=args.probe_svd_energy,
+                basis_energy=args.probe_basis_energy,
+                head_prefix=head_prefix)
+            merge_seconds = time.time() - start
+
+            child = build_model(args, args.num_classes)
+            child.load_state_dict(child_sd, strict=False)
+            # The child owns neither parent's BatchNorm statistics, so they are
+            # recomputed for the network as assembled.
+            reset_bn_stats(child, train_loader)
+            budget.count_forward_train(1)
+
+            per_class, overall = evaluate_all_classes(child, val_loader,
+                                                      args.num_classes)
+            logger.log_train({
+                'stage': 'offspring',
+                'generation': generation,
+                'budget': round(budget.spent, 4),
+                'parents': list(pair),
+                'head': head_index,
+                'base_parent': base,
+                'merger': f'globa_{args.globa_preset}_{args.merge_head}',
+                'trunk_params': 0,
+                'label_head_rows': None,
+                'certificate': sorted(cert),
+                'val_overall': overall,
+                'val_per_class': [round(v, 5) for v in per_class],
+                'merge_seconds': round(merge_seconds, 3),
+            })
+            offspring.append({
+                'model': child,
+                'certificate': cert,
+                'parents': list(pair),
+                'head': head_index,
+                'is_loner': False,
+            })
+
+    del states
+
+    for loner in tqdm(loners, desc=f'Gen {generation}: carrying loners'):
+        budget.count_forward_train(FORWARD_TRAIN_PASSES_PER_LONER)
+        offspring.append({
+            'model': model_by_id[loner],
+            'certificate': set(by_id[loner]['Certificate']),
+            'parents': [loner],
+            'head': None,
+            'is_loner': True,
+        })
+
+    return offspring
+
+
 def breed(pairs, loners, population_info, models, raw_config, args, data,
-          budget, logger, generation):
+          budget, logger, generation, globa_core=None):
     """Merge every couple, carry every loner.
 
-    A couple yields one child per parent -- with a stop node they differ by
-    which parent's head is spliced onto the merged trunk, without one by how
-    the merged weights are interpolated. Either way neither parent's
-    contribution is discarded.
+    A couple always yields one child per parent, so the population size holds.
+    What makes the two siblings differ depends on the operator:
+
+      zipit / permute / wavg
+          One merge produces a composite; children differ by which parent's
+          head is spliced onto the shared trunk (with a stop node) or by the
+          interpolation weight (without one).
+
+      globa
+          The operator is itself asymmetric -- the base parent is kept whole
+          and selected components of the donor are added -- so the couple is
+          merged TWICE, once each way. merge(a, b) leans to a, merge(b, a)
+          leans to b, with nothing invented to tell them apart.
     """
     by_id = {p['Model Name']: p for p in population_info}
     model_by_id = dict(zip([p['Model Name'] for p in population_info], models))
@@ -159,6 +262,10 @@ def breed(pairs, loners, population_info, models, raw_config, args, data,
     val_loader = data.val_loader()
     train_loader = data.train_loader()
     offspring = []
+
+    if args.merger == 'globa':
+        return _breed_globa(pairs, loners, population_info, models, args, data,
+                            budget, logger, generation, globa_core)
 
     for pair in tqdm(pairs, desc=f'Gen {generation}: merging couples'):
         merge, config = merge_couple(pair, raw_config, args, train_loader)
@@ -321,19 +428,22 @@ def mutate_and_save(offspring, args, data, next_dir, budget, logger, generation)
 def _load_globa_core(args):
     """The phase-A backbone GLOBA measures task vectors against.
 
-    Only loaded when mating actually needs it. Refused without a shared origin:
+    Loaded when mating OR merging needs it. Refused without a shared origin:
     a task vector is `agent - core`, and under --pretrain-mode none every agent
     starts from its own random initialisation, so there is no core and the
     decomposition would be describing initialisation noise.
     """
-    if args.mating_mode != 'globa':
+    needs = [flag for flag, on in (
+        ('--mating-mode globa', args.mating_mode == 'globa'),
+        ('--merger globa', args.merger == 'globa'),
+    ) if on]
+    if not needs:
         return None
     if args.pretrain_mode != 'ssl':
         raise SystemExit(
-            '--mating-mode globa requires --pretrain-mode ssl.\n'
-            'GLOBA scores a pair by decomposing task vectors (agent - core), '
-            'and the core is the phase-A backbone. Without one there is no '
-            'shared origin to measure against.')
+            f'{" and ".join(needs)} requires --pretrain-mode ssl.\n'
+            'GLOBA works on task vectors (agent - core), and the core is the '
+            'phase-A backbone. Without one there is no shared origin.')
 
     from sesil.pretrain import backbone_dir
     path = os.path.join(backbone_dir(args), f'{args.arch}.pth.tar')
@@ -407,7 +517,8 @@ def run_evolution(args, budget, data, logger, evaluator):
             })
 
             offspring = breed(pairs, loners, population_info, models, raw_config,
-                              args, data, budget, logger, generation)
+                              args, data, budget, logger, generation,
+                              globa_core=globa_core)
             print(f'[gen {generation}] produced {len(offspring)} agents')
 
         # Stop before mutating if this generation would overrun the budget --

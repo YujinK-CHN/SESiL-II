@@ -253,8 +253,19 @@ def _add_pretrain_config(parser):
 def _add_evolution_config(parser):
     group = parser.add_argument_group('evolution')
     group.add_argument('--merger', type=str, default='permute',
-                       choices=['zipit', 'permute', 'wavg'],
-                       help='Which merge operator crossover uses.')
+                       choices=['zipit', 'permute', 'wavg', 'globa'],
+                       help='Which merge operator crossover uses. The first three '
+                            'align the two networks by matching activations and then '
+                            "blend them. 'globa' instead works on task vectors "
+                            '(agent - phase-A backbone): it keeps one parent whole '
+                            'and adds selected components of the other, chosen by '
+                            '--globa-preset. Because that is asymmetric, a couple is '
+                            'merged twice, once each way, and the two children lean '
+                            'to different parents with no interpolation weight '
+                            'needed. It needs no alignment pass and no activation '
+                            'statistics, so it touches no training data beyond the '
+                            "BatchNorm recalibration each child needs. 'globa' "
+                            'requires --pretrain-mode ssl.')
     group.add_argument('--individual-budget', type=float, default=0.25,
                        help='Training budget granted to ONE agent in ONE generation, '
                             'in the same epoch-equivalent unit as --budget. Each agent '
