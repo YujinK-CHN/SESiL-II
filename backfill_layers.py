@@ -26,7 +26,7 @@ import time
 
 import torch
 
-from sesil.probe.globa_stats import TYPES, pair_stats
+from sesil.globa_stats import TYPES, pair_stats
 
 
 def agents_of(gen0):

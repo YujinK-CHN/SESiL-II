@@ -83,6 +83,60 @@ def mating_score(cert_a, cert_b, strength_b,
     return score
 
 
+def globa_score_matrix(agent_ids, states, core, args):
+    """Pair scores from the GLOBA decomposition of the two task vectors.
+
+    A task vector is `agent - core`, where core is the phase-A backbone, so
+    this mode needs --pretrain-mode ssl; without a shared origin there is
+    nothing to decompose against.
+
+    --globa-with picks which cell type is the score:
+
+        D_minus   opposite-sign overlap. The two parents moved the SAME
+                  structure in OPPOSITE directions, which is what specialising
+                  differently looks like. GLOBA calls this conflict because it
+                  is hard to MERGE; measured over 980 merges it is the only
+                  GLOBA statistic that beats random partner choice (22/35
+                  seeds, p=0.032). Hard to merge and worth merging are not the
+                  same axis.
+
+        E         one parent occupies the cell and the other reaches both its
+                  row and its column -- GLOBA's "structural hole". The largest
+                  type by energy (~42%) and the one theory likes best, but it
+                  varies by only ~18% of its own size between pairs, and across
+                  four measured conditions it never beat random. Kept so the
+                  theory gets a fair test in evolution, not because the probe
+                  endorsed it.
+
+    Scores are SYMMETRIC -- score(a, b) == score(b, a) -- unlike certificate
+    mode, which is directional. With deterministic choice that makes mutual
+    picks easier to achieve, so expect fewer loners.
+
+    Cost: one SVD per analysable layer per pair, recomputed every generation
+    because the agents move. Measured at ~1.3 s per pair.
+    """
+    from sesil.globa_stats import pair_stats
+
+    key = f'energy_{args.globa_with}'
+    scores = {a: {} for a in agent_ids}
+
+    for i, a in enumerate(agent_ids):
+        for b in agent_ids[i + 1:]:
+            summary, _per_layer = pair_stats(
+                states[a], states[b], core,
+                eta=args.probe_eta,
+                svd_energy=args.probe_svd_energy,
+                basis_energy=args.probe_basis_energy,
+                head_prefix=args.head_prefix,
+                weighting=args.probe_layer_weighting,
+            )
+            value = float(summary['energy_frac'][args.globa_with])
+            scores[a][b] = value
+            scores[b][a] = value
+
+    return scores
+
+
 def build_score_matrix(population_info, mode='certificate', **kwargs):
     """Directional mating scores: scores[a][b] = how much a wants b.
 
@@ -130,6 +184,13 @@ def _score_kwargs(args):
     )
 
 
+def best_choice(score_dict):
+    """Pick the highest-scoring mate. Ties broken by name, so it is repeatable."""
+    if not score_dict:
+        return None
+    return max(sorted(score_dict), key=lambda m: score_dict[m])
+
+
 def probabilistic_choice(score_dict):
     """Pick a mate from score_dict with probability proportional to score."""
     if not score_dict:
@@ -146,39 +207,69 @@ def probabilistic_choice(score_dict):
 # Strategy
 # --------------------------------------------------------------------------- #
 
-def select_mates(population_info, args):
-    """Mutual, probabilistic mate choice.
+def select_mates(population_info, args, scores=None):
+    """Mutual mate choice.
 
-    Each unpaired agent probabilistically picks a mate; only RECIPROCATED picks
-    become couples. A couple yields one child per parent (see
-    sesil.merge.extract_children), so each couple is recorded once and the
-    population size is preserved. Agents nobody reciprocated become loners and
-    carry forward unchanged, earning one random uncertified class to explore.
+    Each unpaired agent picks a mate; only RECIPROCATED picks become couples. A
+    couple yields one child per parent (see sesil.merge.extract_children), so
+    each couple is recorded once and the population size is preserved. Agents
+    nobody reciprocated become loners and carry forward unchanged, earning one
+    random uncertified class to explore.
+
+    How an agent picks depends on the mode. Certificate and random modes sample
+    in proportion to score, so a weaker candidate still gets chosen sometimes --
+    that randomness is what lets the population explore pairings. GLOBA mode
+    takes the argmax instead: it is a prediction of which partner merges best,
+    and sampling around a prediction would only blur it.
+
+    `scores` may be supplied precomputed, which is how GLOBA mode passes in a
+    matrix that needed the agents' weights and the phase-A backbone to build.
 
     Returns (pairs, loners).
     """
-    scores = build_score_matrix(population_info, mode=args.mating_mode,
-                                **_score_kwargs(args))
+    if scores is None:
+        scores = build_score_matrix(population_info, mode=args.mating_mode,
+                                    **_score_kwargs(args))
 
+    deterministic = args.mating_mode == 'globa'
     agents = list(scores.keys())
     n_agents = len(agents)
 
     pairs = []
     paired = set()
 
-    for _ in range(args.max_retries):
-        choices = {m: probabilistic_choice(scores[m])
-                   for m in agents if m not in paired}
+    # Deterministic choice converges: once a round adds no pair, no later round
+    # will either, since every agent's ranking over the remaining candidates is
+    # unchanged. Probabilistic choice keeps retrying because a different draw
+    # can succeed where the last failed.
+    rounds = 1 if deterministic else args.max_retries
+    for _ in range(rounds):
+        available = [m for m in agents if m not in paired]
+        while True:
+            choices = {}
+            for m in available:
+                options = {k: v for k, v in scores[m].items() if k not in paired}
+                choices[m] = (best_choice(options) if deterministic
+                              else probabilistic_choice(options))
 
-        for a, b in choices.items():
-            if b is not None and choices.get(b) == a:
-                if a not in paired and b not in paired:
-                    pairs.append(tuple(sorted((a, b))))
-                    paired.update([a, b])
+            new_pairs = []
+            for a, b in choices.items():
+                if b is not None and choices.get(b) == a:
+                    if a not in paired and b not in paired:
+                        new_pairs.append(tuple(sorted((a, b))))
+                        paired.update([a, b])
+
+            pairs.extend(new_pairs)
+            available = [m for m in agents if m not in paired]
+            # Probabilistic mode re-draws in the outer loop; deterministic mode
+            # keeps matching greedily until nobody new can pair.
+            if not new_pairs or not deterministic:
+                break
+        if len(paired) == n_agents:
+            break
 
     loners = [m for m in agents if m not in paired]
 
-    assert 2 * len(pairs) + len(loners) == n_agents, \
-        f'Population size mismatch: {2 * len(pairs) + len(loners)} != {n_agents}'
+    assert 2 * len(pairs) + len(loners) == n_agents,         f'Population size mismatch: {2 * len(pairs) + len(loners)} != {n_agents}'
 
     return pairs, loners

@@ -46,7 +46,7 @@ from sesil.merge import extract_children, merge_couple, point_at
 from sesil.population import generation_dir, list_population, read_meta
 from sesil.pretrain import backbone_dir, build_model, build_population
 from sesil.probe.globa_merge import merge as globa_merge_pair
-from sesil.probe.globa_stats import TYPES, pair_stats
+from sesil.globa_stats import TYPES, pair_stats
 from sesil.probe.retention import pair_retention
 from sesil.selection import mating_score
 from sesil.ssl import classifier_name

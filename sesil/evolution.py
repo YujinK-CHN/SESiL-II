@@ -30,6 +30,7 @@ number of generations. See sesil/budget.py.
 """
 
 import os
+import time
 
 import numpy as np
 import torch
@@ -54,7 +55,8 @@ from sesil.fitness import evaluate_all_classes, summarise
 from sesil.merge import extract_children, merge_couple, point_at
 from sesil.mutation import mutate
 from sesil.population import generation_dir, list_population, save_agent
-from sesil.selection import select_mates, strength_matrix
+from sesil.selection import globa_score_matrix, select_mates, strength_matrix
+from sesil.ssl import classifier_name
 
 
 def _load_agent(agent_id, raw_config, data, budget):
@@ -316,9 +318,34 @@ def mutate_and_save(offspring, args, data, next_dir, budget, logger, generation)
 # Driver
 # --------------------------------------------------------------------------- #
 
+def _load_globa_core(args):
+    """The phase-A backbone GLOBA measures task vectors against.
+
+    Only loaded when mating actually needs it. Refused without a shared origin:
+    a task vector is `agent - core`, and under --pretrain-mode none every agent
+    starts from its own random initialisation, so there is no core and the
+    decomposition would be describing initialisation noise.
+    """
+    if args.mating_mode != 'globa':
+        return None
+    if args.pretrain_mode != 'ssl':
+        raise SystemExit(
+            '--mating-mode globa requires --pretrain-mode ssl.\n'
+            'GLOBA scores a pair by decomposing task vectors (agent - core), '
+            'and the core is the phase-A backbone. Without one there is no '
+            'shared origin to measure against.')
+
+    from sesil.pretrain import backbone_dir
+    path = os.path.join(backbone_dir(args), f'{args.arch}.pth.tar')
+    if not os.path.exists(path):
+        raise SystemExit(f'No phase-A backbone at {path}. Did pretrain run?')
+    return torch.load(path, map_location='cpu')
+
+
 def run_evolution(args, budget, data, logger, evaluator):
     """Evolve until the training budget is exhausted."""
     raw_config = build_raw_config(args)
+    globa_core = _load_globa_core(args)
 
     generation = args.start_gen
     completed = 0
@@ -352,7 +379,24 @@ def run_evolution(args, budget, data, logger, evaluator):
             # watermark -- the x-values the baseline's curve lines up with.
             evaluator.maybe_record(models, step=generation, step_kind='generation')
 
-            pairs, loners = select_mates(population_info, args)
+            # GLOBA scoring needs the agents' weights and the shared
+            # backbone, neither of which selection can reach on its own.
+            pair_scores = None
+            if globa_core is not None:
+                head_prefix = classifier_name(models[0]) + '.'
+                args.head_prefix = head_prefix
+                states = {info['Model Name']:
+                          {k: v.detach().cpu() for k, v in m.state_dict().items()}
+                          for info, m in zip(population_info, models)}
+                t0 = time.time()
+                pair_scores = globa_score_matrix(
+                    [info['Model Name'] for info in population_info],
+                    states, globa_core, args)
+                print(f'[gen {generation}] globa pair scoring '
+                      f'({args.globa_with}) took {time.time() - t0:.1f}s')
+                del states
+
+            pairs, loners = select_mates(population_info, args, scores=pair_scores)
             print(f'[gen {generation}] {len(pairs)} couples, {len(loners)} loners')
             logger.log_train({
                 'stage': 'mating',

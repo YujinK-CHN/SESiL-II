@@ -350,7 +350,7 @@ def _add_certificate_config(parser):
 def _add_selection_config(parser):
     group = parser.add_argument_group('selection')
     group.add_argument('--mating-mode', type=str, default='certificate',
-                       choices=['certificate', 'random'],
+                       choices=['certificate', 'random', 'globa'],
                        help="What mate choice is based on. 'certificate' scores a "
                             "mate by the classes it is certified on, tuned by "
                             "--cert-with / --weight-extra / --weight-common. "
@@ -358,7 +358,28 @@ def _add_selection_config(parser):
                             'random -- the control arm. Any claim that selection '
                             'helps is a claim about beating this, so it is an '
                             'explicit mode rather than something faked by zeroing '
-                            'the weights.')
+                            "the weights. 'globa' scores a pair by decomposing "
+                            'their task vectors against the phase-A backbone, tuned '
+                            'by --globa-with; it needs --pretrain-mode ssl and it '
+                            'picks the best-predicted partner rather than sampling.')
+    group.add_argument('--globa-with', type=str, default='D_minus',
+                       choices=['D_minus', 'E'],
+                       help="GLOBA MODE ONLY. Which cell type scores a pair. "
+                            "'D_minus' is opposite-sign overlap -- the two parents "
+                            'moved the same structure in opposite directions, which '
+                            'is what specialising differently looks like. Over 980 '
+                            'measured merges it is the only GLOBA statistic that '
+                            'beat random partner choice (22/35 seeds, p=0.032). '
+                            "'E' is GLOBA's structural hole, the type its own theory "
+                            'rates highest; it is ~42% of the update energy but '
+                            'varies by only ~18% of its own size between pairs, and '
+                            'across four measured conditions it never beat random. '
+                            'Kept so the theory can be tested in evolution, not '
+                            'because the probe supported it. '
+                            'No multi-type option exists: the six fractions sum to '
+                            '1, so any sum over a subset is the mirror image of what '
+                            'is left out -- summing all types but D_minus is exactly '
+                            'minimising D_minus.')
     group.add_argument('--cert-with', type=str, default='count',
                        choices=['count', 'accuracy'],
                        help="CERTIFICATE MODE ONLY. "

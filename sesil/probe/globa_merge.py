@@ -36,7 +36,7 @@ import hashlib
 
 import torch
 
-from sesil.probe.globa_stats import (
+from sesil.globa_stats import (
     TYPES,
     _lead_basis,
     _truncate,
