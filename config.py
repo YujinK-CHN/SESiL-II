@@ -633,6 +633,73 @@ def build_raw_config(args):
     }
 
 
+def validate(args):
+    """Refuse settings that contradict each other, BEFORE anything runs.
+
+    These checks live here rather than at the point of use because the point of
+    use is too late. The GLOBA guard used to sit at the top of run_evolution,
+    which happens after pretrain -- so a run with --merger globa and
+    --pretrain-mode none would spend its whole pretrain budget and only then
+    discover the settings could never have worked.
+
+    Fatal conflicts stop the run. Settings that are merely inert print a
+    warning and continue, because a flag that silently does nothing is how a
+    result gets misattributed later.
+    """
+    needs_core = [flag for flag, on in (
+        ('--mating-mode globa', args.mating_mode == 'globa'),
+        ('--merger globa', args.merger == 'globa'),
+        ('--probe-merger ' + str(getattr(args, 'probe_merger', '')),
+         args.method == 'probe' and getattr(args, 'probe_merger', 'sesil') in ('globa', 'both')),
+    ) if on]
+
+    if needs_core and args.pretrain_mode != 'ssl':
+        raise SystemExit(
+            f'Conflicting settings: {" and ".join(needs_core)} requires '
+            f'--pretrain-mode ssl, but --pretrain-mode is '
+            f'{args.pretrain_mode!r}.\n'
+            f'GLOBA works on task vectors (agent - core), and the core is the '
+            f'phase-A backbone. Under --pretrain-mode none every agent starts '
+            f'from its own random initialisation, so there is no shared origin '
+            f'and nothing to decompose against.\n'
+            f'Either add --pretrain-mode ssl, or choose a non-GLOBA option.')
+
+    if needs_core and args.phase_a_ratio <= 0:
+        raise SystemExit(
+            f'Conflicting settings: {" and ".join(needs_core)} needs a phase-A '
+            f'backbone, but --phase-a-ratio is {args.phase_a_ratio}, so phase A '
+            f'never runs.')
+
+    warn = []
+    if args.pretrain_mode != 'ssl' and args.phase_b_freeze > 0:
+        warn.append(f'--phase-b-freeze {args.phase_b_freeze} does nothing '
+                    f'without --pretrain-mode ssl (there is no backbone to freeze)')
+    if args.stop_node is not None and args.merger != 'globa':
+        if abs(args.merge_bias - 0.5) > 1e-9:
+            warn.append(f'--merge-bias {args.merge_bias} is ignored when '
+                        f"--stop-node is set; the parents' separate heads "
+                        f'supply the asymmetry instead')
+    if args.merger == 'globa' and args.stop_node is not None:
+        warn.append('--stop-node is ignored by --merger globa, which merges '
+                    'whole task vectors')
+    if args.merger != 'globa' and args.method != 'probe':
+        if args.globa_preset != 'globa':
+            warn.append(f'--globa-preset {args.globa_preset} is ignored '
+                        f'without --merger globa')
+    if args.mating_mode != 'globa' and args.globa_with != 'D_minus':
+        warn.append(f'--globa-with {args.globa_with} is ignored without '
+                    f'--mating-mode globa')
+    if args.mating_mode != 'certificate':
+        if args.cert_with != 'count':
+            warn.append(f'--cert-with {args.cert_with} is ignored under '
+                        f'--mating-mode {args.mating_mode}')
+
+    for line in warn:
+        print(f'[config] WARNING: {line}')
+
+    return args
+
+
 def resolve(args):
     """Fill in values that depend on other flags. Call once after parsing.
 
@@ -642,6 +709,7 @@ def resolve(args):
     """
     from sesil.gpu import resolve_device
 
+    validate(args)
     args.device = resolve_device(args)
 
     args.num_classes = DATASET_PRESETS[args.dataset]['num_classes']
