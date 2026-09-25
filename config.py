@@ -349,9 +349,20 @@ def _add_certificate_config(parser):
 
 def _add_selection_config(parser):
     group = parser.add_argument_group('selection')
-    group.add_argument('--mate-score', type=str, default='count',
+    group.add_argument('--mating-mode', type=str, default='certificate',
+                       choices=['certificate', 'random'],
+                       help="What mate choice is based on. 'certificate' scores a "
+                            "mate by the classes it is certified on, tuned by "
+                            "--cert-with / --weight-extra / --weight-common. "
+                            "'random' ignores all of that and pairs uniformly at "
+                            'random -- the control arm. Any claim that selection '
+                            'helps is a claim about beating this, so it is an '
+                            'explicit mode rather than something faked by zeroing '
+                            'the weights.')
+    group.add_argument('--cert-with', type=str, default='count',
                        choices=['count', 'accuracy'],
-                       help="What a certified class is worth when scoring a mate. "
+                       help="CERTIFICATE MODE ONLY. "
+                            "What a certified class is worth when scoring a mate. "
                             "'count': all certified classes weigh the same -- the pure "
                             "certificate, and the default, because mate choice decides "
                             "the offspring's inherited certificate, which is the union "
@@ -368,9 +379,13 @@ def _add_selection_config(parser):
                             "'count' on real populations it correlated at rho 0.895 -- "
                             "a tie-breaker, not a distinct operator.")
     group.add_argument('--weight-extra', type=float, default=1.0,
-                       help='Weight on certified classes the mate has and the chooser lacks.')
+                       help='CERTIFICATE MODE ONLY. Weight on certified classes the '
+                            'mate has and the chooser lacks.')
     group.add_argument('--weight-common', type=float, default=0.1,
-                       help='Weight on certified classes both already hold.')
+                       help='CERTIFICATE MODE ONLY. Weight on certified classes both '
+                            'already hold. The ratio to --weight-extra is what makes '
+                            'selection complementarity-seeking (extra > common), '
+                            'neutral, or similarity-seeking (common > extra).')
     group.add_argument('--max-retries', type=int, default=100,
                        help='Attempts to find reciprocated pairs before giving up.')
 

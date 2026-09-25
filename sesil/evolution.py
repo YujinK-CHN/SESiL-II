@@ -105,7 +105,7 @@ def evaluate_and_certify(agent_ids, raw_config, args, data, budget, logger, gene
 
     # Per-class weights mate selection will use, resolved once for the whole
     # population so every scoring mode shares one code path.
-    strengths = strength_matrix(args.mate_score, per_class_accuracy, args.num_classes)
+    strengths = strength_matrix(args.cert_with, per_class_accuracy, args.num_classes)
 
     population_info = []
     for agent_id, per_class, overall, cert, strength in zip(

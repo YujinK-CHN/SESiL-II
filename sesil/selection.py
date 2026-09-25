@@ -83,13 +83,26 @@ def mating_score(cert_a, cert_b, strength_b,
     return score
 
 
-def build_score_matrix(population_info, **kwargs):
+def build_score_matrix(population_info, mode='certificate', **kwargs):
     """Directional mating scores: scores[a][b] = how much a wants b.
 
-    Each record carries 'Strength', the per-class weight vector already
-    resolved for the configured --mate-score mode, so all three modes share one
-    code path and differ only in what that vector contains.
+    'random' gives every candidate the same score, so probabilistic_choice
+    samples uniformly. It is a real mode rather than a side effect of zeroing
+    the weights: the control arm has to be something the code states, not
+    something that falls out of a fallback branch.
+
+    'certificate' scores each candidate by the classes it is certified on, with
+    each class weighted by the vector already resolved for --cert-with.
     """
+    if mode == 'random':
+        return {a['Model Name']: {b['Model Name']: 1.0
+                                  for b in population_info if b is not a}
+                for a in population_info}
+
+    if mode != 'certificate':
+        raise ValueError(
+            f"Unknown mating mode {mode!r}; expected 'certificate' or 'random'.")
+
     scores = {}
     for agent_a in population_info:
         cert_a = set(agent_a['Certificate'])
@@ -104,6 +117,13 @@ def build_score_matrix(population_info, **kwargs):
 
 
 def _score_kwargs(args):
+    """Scoring parameters for the configured mode.
+
+    Random mode takes none -- passing weights it ignores would suggest they
+    still do something.
+    """
+    if args.mating_mode == 'random':
+        return {}
     return dict(
         weight_extra=args.weight_extra,
         weight_common=args.weight_common,
@@ -137,7 +157,8 @@ def select_mates(population_info, args):
 
     Returns (pairs, loners).
     """
-    scores = build_score_matrix(population_info, **_score_kwargs(args))
+    scores = build_score_matrix(population_info, mode=args.mating_mode,
+                                **_score_kwargs(args))
 
     agents = list(scores.keys())
     n_agents = len(agents)
