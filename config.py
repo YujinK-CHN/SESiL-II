@@ -363,7 +363,7 @@ def _add_selection_config(parser):
                             'by --globa-with; it needs --pretrain-mode ssl and it '
                             'picks the best-predicted partner rather than sampling.')
     group.add_argument('--globa-with', type=str, default='D_minus',
-                       choices=['D_minus', 'E'],
+                       choices=['D_minus', 'D_plus', 'E'],
                        help="GLOBA MODE ONLY. Which cell type scores a pair. "
                             "'D_minus' is opposite-sign overlap -- the two parents "
                             'moved the same structure in opposite directions, which '
@@ -376,6 +376,14 @@ def _add_selection_config(parser):
                             'across four measured conditions it never beat random. '
                             'Kept so the theory can be tested in evolution, not '
                             'because the probe supported it. '
+                            "'D_plus' is same-sign overlap -- the donor moved "
+                            'structure the base already moved, the same way, so it '
+                            'brings nothing new. It is scored INVERTED (less '
+                            'redundancy is better) and is the second strongest '
+                            'signal measured, rho -0.155 against merge outcome. It '
+                            'only became a distinct option once scoring went '
+                            'directional: under symmetric scoring, minimising D_plus '
+                            'was arithmetically the same rule as maximising the rest. '
                             'No multi-type option exists: the six fractions sum to '
                             '1, so any sum over a subset is the mirror image of what '
                             'is left out -- summing all types but D_minus is exactly '
@@ -407,8 +415,19 @@ def _add_selection_config(parser):
                             'already hold. The ratio to --weight-extra is what makes '
                             'selection complementarity-seeking (extra > common), '
                             'neutral, or similarity-seeking (common > extra).')
-    group.add_argument('--max-retries', type=int, default=100,
-                       help='Attempts to find reciprocated pairs before giving up.')
+    group.add_argument('--mating-rounds', type=int, default=100,
+                       help='How many rounds of mate choice to run. Each round: '
+                            'everyone still unpaired picks a partner from those '
+                            'still unpaired, reciprocated picks become couples, and '
+                            'both leave the pool. Whoever remains at the end is a '
+                            'loner. This is really an exploration dial -- a loner '
+                            'carries forward and earns one random UNCERTIFIED class, '
+                            'which is the only way a class the population has lost '
+                            'can return. 1 makes a loner of anyone whose first choice '
+                            'did not reciprocate; the default 100 keeps re-matching '
+                            'until almost nobody is left, so almost nobody explores. '
+                            'Replaces --max-retries, which meant the same thing for '
+                            'the sampled modes only.')
 
 
 def _add_subset_config(parser):

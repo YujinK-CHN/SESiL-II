@@ -131,9 +131,22 @@ def globa_score_matrix(agent_ids, states, core, args):
                 head_prefix=args.head_prefix,
                 weighting=args.probe_layer_weighting,
             )
-            scores[a][b] = float(a_sees_b[args.globa_with])
-            scores[b][a] = float(b_sees_a[args.globa_with])
+            scores[a][b] = _globa_value(a_sees_b, args.globa_with)
+            scores[b][a] = _globa_value(b_sees_a, args.globa_with)
     return scores
+
+
+# D_plus is redundancy -- the donor moved structure the base already moved, the
+# same way. Wanting LESS of it is the sensible direction, so it is reported as
+# the share that is NOT redundant. Subtracting rather than negating keeps every
+# score in [0, 1], which matters because a negative score would break any
+# caller that treats scores as sampling weights.
+_GLOBA_INVERTED = {'D_plus'}
+
+
+def _globa_value(shares, kind):
+    value = float(shares[kind])
+    return 1.0 - value if kind in _GLOBA_INVERTED else value
 
 
 def build_score_matrix(population_info, mode='certificate', **kwargs):
@@ -207,22 +220,29 @@ def probabilistic_choice(score_dict):
 # --------------------------------------------------------------------------- #
 
 def select_mates(population_info, args, scores=None):
-    """Mutual mate choice.
+    """Mutual mate choice, in rounds.
 
-    Each unpaired agent picks a mate; only RECIPROCATED picks become couples. A
-    couple yields one child per parent (see sesil.merge.extract_children), so
-    each couple is recorded once and the population size is preserved. Agents
-    nobody reciprocated become loners and carry forward unchanged, earning one
-    random uncertified class to explore.
+    One round: every agent still in the pool picks a partner from the agents
+    still in the pool; picks that are RECIPROCATED become couples; both members
+    leave the pool. Then the remaining agents try again. It ends when the pool
+    is empty or --mating-rounds is reached, and whoever is left is a loner.
+
+    Loners matter more than they look. They carry forward unchanged and earn
+    one random UNCERTIFIED class to explore, which is the only route by which a
+    class the population has lost can come back. So --mating-rounds is really
+    an exploration dial: 1 means a loner is anyone whose first choice did not
+    reciprocate, and a high value keeps re-matching until almost everyone is
+    paired and nobody explores.
 
     How an agent picks depends on the mode. Certificate and random modes sample
-    in proportion to score, so a weaker candidate still gets chosen sometimes --
-    that randomness is what lets the population explore pairings. GLOBA mode
-    takes the argmax instead: it is a prediction of which partner merges best,
-    and sampling around a prediction would only blur it.
+    in proportion to score, so a fresh round can succeed where the last failed.
+    GLOBA mode takes the argmax: it is a prediction of which partner merges
+    best, and sampling around a prediction only blurs it. Because that choice
+    is deterministic, a round that pairs nobody would repeat forever, so it
+    stops early.
 
-    `scores` may be supplied precomputed, which is how GLOBA mode passes in a
-    matrix that needed the agents' weights and the phase-A backbone to build.
+    `scores` may be supplied precomputed -- GLOBA mode does that, since its
+    matrix needs the agents' weights and the phase-A backbone.
 
     Returns (pairs, loners).
     """
@@ -237,34 +257,28 @@ def select_mates(population_info, args, scores=None):
     pairs = []
     paired = set()
 
-    # Deterministic choice converges: once a round adds no pair, no later round
-    # will either, since every agent's ranking over the remaining candidates is
-    # unchanged. Probabilistic choice keeps retrying because a different draw
-    # can succeed where the last failed.
-    rounds = 1 if deterministic else args.max_retries
-    for _ in range(rounds):
-        available = [m for m in agents if m not in paired]
-        while True:
-            choices = {}
-            for m in available:
-                options = {k: v for k, v in scores[m].items() if k not in paired}
-                choices[m] = (best_choice(options) if deterministic
-                              else probabilistic_choice(options))
+    for _ in range(max(args.mating_rounds, 1)):
+        pool = [m for m in agents if m not in paired]
+        if len(pool) < 2:
+            break
 
-            new_pairs = []
-            for a, b in choices.items():
-                if b is not None and choices.get(b) == a:
-                    if a not in paired and b not in paired:
-                        new_pairs.append(tuple(sorted((a, b))))
-                        paired.update([a, b])
+        choices = {}
+        for m in pool:
+            options = {k: v for k, v in scores[m].items() if k not in paired}
+            choices[m] = (best_choice(options) if deterministic
+                          else probabilistic_choice(options))
 
-            pairs.extend(new_pairs)
-            available = [m for m in agents if m not in paired]
-            # Probabilistic mode re-draws in the outer loop; deterministic mode
-            # keeps matching greedily until nobody new can pair.
-            if not new_pairs or not deterministic:
-                break
-        if len(paired) == n_agents:
+        new_pairs = []
+        for a, b in choices.items():
+            if b is not None and choices.get(b) == a:
+                if a not in paired and b not in paired:
+                    new_pairs.append(tuple(sorted((a, b))))
+                    paired.update([a, b])
+        pairs.extend(new_pairs)
+
+        # Deterministic choice cannot change its mind: if this round paired
+        # nobody, every later round sees the same pool and the same rankings.
+        if deterministic and not new_pairs:
             break
 
     loners = [m for m in agents if m not in paired]
