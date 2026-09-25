@@ -84,45 +84,46 @@ def mating_score(cert_a, cert_b, strength_b,
 
 
 def globa_score_matrix(agent_ids, states, core, args):
-    """Pair scores from the GLOBA decomposition of the two task vectors.
+    """Directional pair scores from the GLOBA decomposition.
 
-    A task vector is `agent - core`, where core is the phase-A backbone, so
-    this mode needs --pretrain-mode ssl; without a shared origin there is
-    nothing to decompose against.
+    scores[a][b] is what B brings A: B's cells typed against A's occupancy,
+    as a share of everything B brings. GLOBA works this way too -- model 1 is
+    the base, model 2 the donor, and the six types describe the donor relative
+    to the base.
 
-    --globa-with picks which cell type is the score:
+    Asymmetric on purpose. SESiL pairs by mutual acceptance, so a score has to
+    answer "what does this partner bring ME". A symmetric score makes every
+    agent agree on who is best, which turns mutual choice into one global
+    ranking: the top pair always matches, then the next, and nobody is ever
+    left unpaired. Measured, that gives exactly 0 loners on an even population
+    and exactly 1 on an odd one -- and loners are the only route by which a
+    lost class re-enters the run.
 
-        D_minus   opposite-sign overlap. The two parents moved the SAME
-                  structure in OPPOSITE directions, which is what specialising
-                  differently looks like. GLOBA calls this conflict because it
-                  is hard to MERGE; measured over 980 merges it is the only
-                  GLOBA statistic that beats random partner choice (22/35
-                  seeds, p=0.032). Hard to merge and worth merging are not the
-                  same axis.
+    A task vector is `agent - core`, so this needs --pretrain-mode ssl.
 
-        E         one parent occupies the cell and the other reaches both its
-                  row and its column -- GLOBA's "structural hole". The largest
-                  type by energy (~42%) and the one theory likes best, but it
-                  varies by only ~18% of its own size between pairs, and across
-                  four measured conditions it never beat random. Kept so the
-                  theory gets a fair test in evolution, not because the probe
-                  endorsed it.
+    --globa-with picks which type is the score:
 
-    Scores are SYMMETRIC -- score(a, b) == score(b, a) -- unlike certificate
-    mode, which is directional. With deterministic choice that makes mutual
-    picks easier to achieve, so expect fewer loners.
+        D_minus   the donor moved structure the base also moved, in the
+                  OPPOSITE direction -- what specialising differently looks
+                  like. GLOBA calls it conflict because it is hard to merge;
+                  over 980 measured merges it was the only GLOBA statistic to
+                  beat random partner choice (22/35 seeds, p=0.032).
 
-    Cost: one SVD per analysable layer per pair, recomputed every generation
-    because the agents move. Measured at ~1.3 s per pair.
+        E         the donor occupies cells the base does not, inside the base's
+                  rows and columns -- GLOBA's "structural hole", the type its
+                  theory rates highest. Never beat random in four measured
+                  conditions; kept so the theory gets a fair test.
+
+    Both directions come from one decomposition, so this costs the same as the
+    symmetric version: one SVD per analysable layer per pair, recomputed every
+    generation because the agents move.
     """
-    from sesil.globa_stats import pair_stats
+    from sesil.globa_stats import directional_pair_stats
 
-    key = f'energy_{args.globa_with}'
     scores = {a: {} for a in agent_ids}
-
     for i, a in enumerate(agent_ids):
         for b in agent_ids[i + 1:]:
-            summary, _per_layer = pair_stats(
+            a_sees_b, b_sees_a = directional_pair_stats(
                 states[a], states[b], core,
                 eta=args.probe_eta,
                 svd_energy=args.probe_svd_energy,
@@ -130,10 +131,8 @@ def globa_score_matrix(agent_ids, states, core, args):
                 head_prefix=args.head_prefix,
                 weighting=args.probe_layer_weighting,
             )
-            value = float(summary['energy_frac'][args.globa_with])
-            scores[a][b] = value
-            scores[b][a] = value
-
+            scores[a][b] = float(a_sees_b[args.globa_with])
+            scores[b][a] = float(b_sees_a[args.globa_with])
     return scores
 
 

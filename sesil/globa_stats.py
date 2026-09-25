@@ -104,6 +104,47 @@ def prune(C, eta):
     return torch.where(mask.view_as(C), C, torch.zeros_like(C))
 
 
+def classify_directional(C_base, C_donor):
+    """Type the DONOR's cells against the BASE's occupancy. GLOBA's own form.
+
+    GLOBA is not symmetric: model 1 is taken whole and only model 2 is sorted
+    into the six types, each defined by what model 1 does with that cell's row
+    and column. Its type E, for instance, is
+
+        (C1 == 0) & C1_occupied_rows & C1_occupied_cols
+
+    -- cells the donor occupies that the base does not, inside the base's row
+    and column span. Swap the two models and the masks change.
+
+    That asymmetry is what SESiL's mating needs. Pairing is mutual acceptance,
+    so a score has to mean "what does this partner bring ME", which differs by
+    direction. The symmetric `classify` below unions both readings and makes
+    score(a, b) == score(b, a), which collapses mutual choice into a single
+    global ranking -- every agent then agrees on who is best, and pairing
+    becomes deterministic greedy matching with no room for preference to
+    differ.
+
+    Only cells the donor occupies are typed; the base's own cells are its
+    baseline, not something it can receive.
+    """
+    nz_base, nz_donor = C_base != 0, C_donor != 0
+    row_base = nz_base.any(1, keepdim=True)
+    col_base = nz_base.any(0, keepdim=True)
+
+    both = nz_base & nz_donor
+    same = torch.sign(C_base) == torch.sign(C_donor)
+    only_donor = nz_donor & ~nz_base
+
+    return {
+        'A': only_donor & ~row_base & ~col_base,
+        'B': only_donor & row_base & ~col_base,
+        'C': only_donor & ~row_base & col_base,
+        'E': only_donor & row_base & col_base,
+        'D_plus': both & same,
+        'D_minus': both & ~same,
+    }
+
+
 def classify(Cp, Cq):
     """Six boolean masks partitioning the cells either parent occupies.
 
@@ -263,3 +304,82 @@ def pair_stats(sd_p, sd_q, core, eta=0.80, svd_energy=0.90,
     summary['globa_score'] = energy_frac['A'] - energy_frac['D_minus']
 
     return summary, per_layer
+
+
+# --------------------------------------------------------------------------- #
+# Directional scoring (mate selection)
+# --------------------------------------------------------------------------- #
+
+def directional_pair_stats(sd_a, sd_b, core, eta=0.80, svd_energy=0.90,
+                           basis_energy=0.999, head_prefix='linear.',
+                           weighting='energy'):
+    """Energy fractions for BOTH directions of a pair, from one decomposition.
+
+    Returns (a_sees_b, b_sees_a): each a dict of type -> share of what that
+    donor brings, typed against that base. `a_sees_b` is what B offers A, which
+    is the score A should use when choosing B.
+
+    The SVD, the joint basis and the projected matrices are identical whichever
+    parent is called the base -- only the typing differs -- so both directions
+    come out of a single decomposition and this costs no more than the
+    symmetric version.
+
+    Energy is measured on the donor's own cells, normalised by the donor's
+    total, so the number reads as "what fraction of what B brings is of this
+    type, as far as A is concerned".
+    """
+    per_layer = {}
+    for name, tensor in sd_a.items():
+        if name not in sd_b or not is_analysable(name, tensor, core, head_prefix):
+            continue
+        base = core[name].double()
+        tau_a = as_matrix(tensor.double() - base)
+        tau_b = as_matrix(sd_b[name].double() - base)
+
+        Ua, Sa, Vha = torch.linalg.svd(tau_a, full_matrices=False)
+        Ub, Sb, Vhb = torch.linalg.svd(tau_b, full_matrices=False)
+        Ua_, Sa_, Vha_ = _truncate(Ua, Sa, Vha, svd_energy)
+        Ub_, Sb_, Vhb_ = _truncate(Ub, Sb, Vhb, svd_energy)
+
+        Pu = _lead_basis(torch.cat((Ua_, Ub_), 1), basis_energy)
+        Pv = _lead_basis(torch.cat((Vha_.T, Vhb_.T), 1), basis_energy)
+
+        ta = Ua_ @ torch.diag(Sa_) @ Vha_ if svd_energy < 1.0 else tau_a
+        tb = Ub_ @ torch.diag(Sb_) @ Vhb_ if svd_energy < 1.0 else tau_b
+        Ca = prune(Pu.T @ ta @ Pv, eta)
+        Cb = prune(Pu.T @ tb @ Pv, eta)
+
+        def shares(C_base, C_donor):
+            masks = classify_directional(C_base, C_donor)
+            energy = C_donor * C_donor
+            total = float(energy.sum())
+            return {t: (float((energy * masks[t]).sum()) / total if total > 0 else 0.0)
+                    for t in TYPES}
+
+        per_layer[name] = {
+            # a_sees_b: B is the donor, typed against A.
+            'a_sees_b': shares(Ca, Cb),
+            'b_sees_a': shares(Cb, Ca),
+            'weight': float(tau_a.norm()) ** 2 + float(tau_b.norm()) ** 2,
+        }
+
+    if not per_layer:
+        raise ValueError(
+            'No analysable layers. Agents and core must share an architecture, '
+            'and the core must be a real phase-A backbone.')
+
+    if weighting == 'energy':
+        w = {n: s['weight'] for n, s in per_layer.items()}
+        if sum(w.values()) <= 0:
+            w = {n: 1.0 for n in per_layer}
+    elif weighting == 'uniform':
+        w = {n: 1.0 for n in per_layer}
+    else:
+        raise ValueError(f'Unknown layer weighting {weighting!r}')
+    total_w = sum(w.values())
+
+    def collapse(key):
+        return {t: float(sum(w[n] * s[key][t] for n, s in per_layer.items()) / total_w)
+                for t in TYPES}
+
+    return collapse('a_sees_b'), collapse('b_sees_a')
