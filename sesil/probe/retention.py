@@ -90,13 +90,72 @@ def harmonic(r_a, r_b):
     return float(2.0 * r_a * r_b / (r_a + r_b))
 
 
+def gain(parent_a, parent_b, child):
+    """How much the child can do that the BETTER single parent could not.
+
+    Retention has a blind spot: it is capped at what the parents already had,
+    so it cannot tell a merge that combined two specialists from one that
+    merely preserved a single parent. Two identical parents have nothing
+    distinctive to lose, so nothing is lost, so retention scores them
+    perfectly -- measured on this data, the one pair with identical
+    certificates scored 0.939, the highest of any group, for a merge that
+    gained nothing at all.
+
+    This asks the complementary question. The reference is the element-wise
+    max of the parents -- the best either could do on each class, which is what
+    a merge would achieve if it kept everything from both. Scoring against that
+    rather than against either parent alone is what makes mating a near-copy
+    worthless: when the parents are the same, the reference is that same
+    agent, and a child that reproduces it gains zero.
+
+    Normalised by the headroom the pairing offered, so it measures how much of
+    the AVAILABLE gain was captured, not how lucky the parents were. A pairing
+    with no headroom -- identical parents -- has nothing to capture and returns
+    0.0 rather than dividing by zero.
+    """
+    a, b, c = _as_vector(parent_a), _as_vector(parent_b), _as_vector(child)
+    best_single = np.maximum(a, b)
+    capped = np.minimum(c, best_single)     # credit is capped at what was available
+
+    def captured(reference):
+        """Share of the OTHER parent's exclusive skill this child picked up.
+
+        Measured per class and only where the other parent was actually
+        better, so it rewards breadth. Summing raw accuracy instead would be
+        blind to how the child spreads its competence: 0.9 on three classes
+        and 0.45 on six carry the same total, but only the second is a merge.
+        """
+        room = np.maximum(best_single - reference, 0.0)
+        total = room.sum()
+        if total <= 1e-12:
+            return None                     # this parent already dominates
+        return float(np.maximum(capped - reference, 0.0).sum() / total)
+
+    from_a, from_b = captured(a), captured(b)
+    if from_a is None or from_b is None:
+        return 0.0                          # one parent dominates: nothing to gain
+
+    # The weaker direction. A child that absorbed one parent whole and ignored
+    # the other has not combined anything, so it must not score for the half
+    # it did manage.
+    return min(from_a, from_b)
+
+
 def pair_retention(acc_a, acc_b, acc_child):
     """Every retention number for one (parents, child) triple.
 
-    `balanced` is the headline: the harmonic mean of the two distinctive
-    retentions. Distinctive rather than total because total is inflated by
-    whatever the parents already had in common, and harmonic because a child
-    that collapses onto one parent has to score near zero.
+    Two headline numbers, answering different questions:
+
+    `balanced`  -- how much of each parent SURVIVED. Harmonic mean of the two
+                   distinctive retentions, so a child that collapses onto one
+                   parent scores near zero.
+    `gain`      -- whether the merge was WORTH MAKING. Zero when the child is
+                   no better than the better single parent, which is what
+                   mating two near-identical agents produces.
+
+    Neither subsumes the other. A merge can preserve both parents perfectly and
+    gain nothing (identical parents), or gain a lot while losing one parent's
+    rarer skills. Report both.
     """
     r_a = retention(acc_a, acc_child)
     r_b = retention(acc_b, acc_child)
@@ -110,4 +169,5 @@ def pair_retention(acc_a, acc_b, acc_child):
         'distinctive_a': d_a,
         'distinctive_b': d_b,
         'balanced': harmonic(d_a, d_b),
+        'gain': gain(acc_a, acc_b, acc_child),
     }

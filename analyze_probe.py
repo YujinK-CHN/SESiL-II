@@ -120,6 +120,20 @@ def certificates(run_dir):
     return out
 
 
+def parent_accuracies(run_dir):
+    """Each agent's per-class accuracy, as the probe measured it."""
+    out = {}
+    path = os.path.join(run_dir, 'train.jsonl')
+    if not os.path.exists(path):
+        return out
+    with open(path) as f:
+        for line in f:
+            row = json.loads(line)
+            if row.get('stage') == 'probe_parent':
+                out[row['agent']] = row['val_per_class']
+    return out
+
+
 def with_certificates(run_dir, pairs):
     """Annotate each pair with its parents' certificate overlap and union.
 
@@ -168,6 +182,20 @@ def load(run_dir):
 
     # Results written before 'own'/'transfer' existed still carry everything
     # needed to derive them, so old runs stay readable without a re-run.
+    # 'gain' postdates these runs but every input it needs was already
+    # recorded: the child's per-class vector sits in the pair row, the
+    # parents' in train.jsonl. Joining the two keeps older results fully
+    # analysable without a re-run. Retention alone cannot tell a merge that
+    # combined two specialists from one that merely preserved a single parent.
+    if rows and 'gain' not in rows[0]:
+        from sesil.probe.retention import gain as _gain
+        parent_acc = parent_accuracies(run_dir)
+        for row in rows:
+            a, b = row['pair']
+            if a in parent_acc and b in parent_acc and 'child_per_class' in row:
+                row['gain'] = _gain(parent_acc[a], parent_acc[b],
+                                    row['child_per_class'])
+
     for row in rows:
         if 'transfer' not in row:
             own_is_a = row['child_index'] == 0
