@@ -45,7 +45,7 @@ from sesil.fitness import evaluate_all_classes
 from sesil.merge import extract_children, merge_couple, point_at
 from sesil.population import generation_dir, list_population, read_meta
 from sesil.pretrain import backbone_dir, build_model, build_population
-from sesil.probe.globa_merge import merge as globa_merge_pair
+from sesil.globa_merge import merge as globa_merge_pair
 from sesil.globa_stats import TYPES, pair_stats
 from sesil.probe.retention import pair_retention
 from sesil.selection import mating_score
@@ -103,7 +103,7 @@ def run_probe(args, budget, data, logger, evaluator=None):
     n_pairs = args.pop_size * (args.pop_size - 1) // 2
     per_couple = (1 if symmetric else 2) if args.probe_merger != 'globa' else 0
     if args.probe_merger in ('globa', 'both'):
-        per_couple += 1
+        per_couple += 2      # GLOBA is asymmetric: merge(a,b) and merge(b,a)
     print(f'[probe] {args.pop_size} agents -> {n_pairs} pairs -> '
           f'{per_couple * n_pairs} children to evaluate')
     if args.probe_merger in ('sesil', 'both'):
@@ -268,29 +268,37 @@ def run_probe(args, budget, data, logger, evaluator=None):
                 del merge, config, children
 
             if args.probe_merger in ('globa', 'both'):
-                # No alignment pass and no activation statistics -- the whole
-                # operator is linear algebra on the task vectors, so it costs
-                # nothing from the data budget. Only the BN recalibration below
-                # touches the training set.
-                t1 = time.time()
-                child_sd = globa_merge_pair(
-                    states[a], states[b], core,
-                    classes_a=trained_on.get(a), classes_b=trained_on.get(b),
-                    preset=args.globa_preset, head=args.globa_head,
-                    eta=args.probe_eta, svd_energy=args.probe_svd_energy,
-                    basis_energy=args.probe_basis_energy,
-                    head_prefix=head_prefix)
-                globa_seconds = time.time() - t1
+                # GLOBA is asymmetric: the base parent is kept whole and only
+                # selected components of the donor are added. So a couple
+                # yields TWO children -- merge(a, b) and merge(b, a) -- one
+                # leaning to each parent, with no interpolation weight needed
+                # to tell them apart.
+                #
+                # No alignment pass and no activation statistics: the operator
+                # is linear algebra on the task vectors, so it costs nothing
+                # from the data budget. Only the BN recalibration touches the
+                # training set.
+                for index, (base, donor) in enumerate(((a, b), (b, a))):
+                    t1 = time.time()
+                    child_sd = globa_merge_pair(
+                        states[base], states[donor], core,
+                        classes_base=trained_on.get(base),
+                        classes_donor=trained_on.get(donor),
+                        preset=args.globa_preset, head=args.globa_head,
+                        eta=args.probe_eta, svd_energy=args.probe_svd_energy,
+                        basis_energy=args.probe_basis_energy,
+                        head_prefix=head_prefix)
+                    globa_seconds = time.time() - t1
 
-                child = build_model(args, args.num_classes)
-                child.load_state_dict(child_sd, strict=False)
-                # The child owns neither parent's BatchNorm statistics, so they
-                # have to be recomputed for the network as assembled -- exactly
-                # as extract_children does for the SESiL side, so neither
-                # operator is handicapped.
-                reset_bn_stats(child, train_loader)
-                budget.count_forward_train(1)
-                produced.append((child, 0, 'globa', 0, globa_seconds))
+                    child = build_model(args, args.num_classes)
+                    child.load_state_dict(child_sd, strict=False)
+                    # The child owns neither parent's BatchNorm statistics, so
+                    # they are recomputed for the network as assembled --
+                    # exactly as extract_children does for the SESiL side, so
+                    # neither operator is handicapped.
+                    reset_bn_stats(child, train_loader)
+                    budget.count_forward_train(1)
+                    produced.append((child, index, 'globa', 0, globa_seconds))
 
             for child, child_index, operator, n_from_trunk, merge_seconds in produced:
                 per_class, overall = evaluate_all_classes(
@@ -315,10 +323,10 @@ def run_probe(args, budget, data, logger, evaluator=None):
                 row = {
                     'own': own,
                     'transfer': transfer,
-                    # GLOBA merging always yields ONE child that must carry
-                    # both parents, so it is symmetric whatever --merge-bias
-                    # says about the SESiL side.
-                    'symmetric': symmetric or operator == 'globa',
+                    # A GLOBA child keeps its base parent whole and adds parts
+                    # of the donor, so it leans to one parent exactly as a
+                    # stop-node child does. Not symmetric.
+                    'symmetric': symmetric and operator != 'globa',
                     'stage': 'probe_pair',
                     'pair': [a, b],
                     'operator': operator,

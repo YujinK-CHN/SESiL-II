@@ -479,15 +479,19 @@ def _add_probe_config(parser):
                             'way to tell a better merge from an easier pair. GLOBA '
                             'needs no forward passes, so it is the cheaper of the '
                             'two.')
-    group.add_argument('--globa-preset', type=str, default='single-full',
-                       choices=['average', 'sum', 'orthogonal-full', 'single-full'],
-                       help='Type coefficients for GLOBA merging. '
-                            "'average' is exactly plain weight averaging and is the "
-                            'reference point: a preset that cannot beat it means the '
-                            "cell typing bought nothing. 'single-full' keeps whole "
-                            'any cell only one parent touched and averages only '
-                            'contested ones. Ignored unless --probe-merger uses '
-                            'GLOBA.')
+    group.add_argument('--globa-preset', type=str, default='globa',
+                       choices=['globa', 'orthogonal', 'all', 'none'],
+                       help='Which components of the DONOR parent a GLOBA merge '
+                            'carries into the child. The base parent is always kept '
+                            "whole. 'globa' is the published default: the cells "
+                            'where the donor disagrees with the base (D_minus) and '
+                            "the gaps it fills inside the base's span (E). "
+                            "'orthogonal' adds the cells the base does not touch at "
+                            "all (A, B, C). 'all' takes every typed donor cell. "
+                            "'none' returns the base unchanged -- a control, since a "
+                            'preset that cannot beat it added nothing. Because the '
+                            'operator is asymmetric, a couple yields two children: '
+                            'merge(a,b) and merge(b,a).')
     group.add_argument('--globa-head', type=str, default='label',
                        choices=['label', 'average'],
                        help="How GLOBA merging combines the classifier. 'label' "
