@@ -210,7 +210,7 @@ def best_choice(score_dict):
     return max(sorted(score_dict), key=lambda m: score_dict[m])
 
 
-def lexicographic_choice(primary, secondary, tolerance=1e-9):
+def lexicographic_choice(primary, secondary, tolerance=0.0):
     """Highest primary score; ties settled by the secondary score.
 
     This exists because the certificate score has almost no resolution. It
@@ -229,7 +229,18 @@ def lexicographic_choice(primary, secondary, tolerance=1e-9):
     if not primary:
         return None
     top = max(primary.values())
-    tied = [m for m in sorted(primary) if primary[m] >= top - tolerance]
+    # A small absolute band, not exact equality. Exact ties are common only
+    # while every agent holds the same number of classes, which is true
+    # straight out of pretrain and false soon after: one generation into a real
+    # run the sizes were already [2,2,2,3,3,3] and the tie-break fired 33% of
+    # the time instead of 100%. Scores differing by 0.1 -- one shared class at
+    # the default --weight-common -- are not a real preference, so treating
+    # them as tied is what keeps the secondary signal in play.
+    #
+    # The floor also absorbs float noise: 0.1 * 3 is 0.30000000000000004, so
+    # scores that should be equal are not.
+    band = max(tolerance, 1e-9)
+    tied = [m for m in sorted(primary) if primary[m] >= top - band]
     if len(tied) == 1 or not secondary:
         return tied[0]
     return max(tied, key=lambda m: secondary.get(m, 0.0))
@@ -301,7 +312,8 @@ def select_mates(population_info, args, scores=None, tiebreak=None):
             if hybrid:
                 choices[m] = lexicographic_choice(
                     options, {k: v for k, v in tiebreak[m].items()
-                              if k not in paired})
+                              if k not in paired},
+                    tolerance=args.hybrid_tolerance)
             elif deterministic:
                 choices[m] = best_choice(options)
             else:

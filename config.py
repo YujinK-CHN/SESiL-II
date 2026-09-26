@@ -435,6 +435,21 @@ def _add_selection_config(parser):
                             'already hold. The ratio to --weight-extra is what makes '
                             'selection complementarity-seeking (extra > common), '
                             'neutral, or similarity-seeking (common > extra).')
+    group.add_argument('--hybrid-tolerance', type=float, default=0.15,
+                       help='HYBRID MODE ONLY. How close to the best certificate '
+                            'score a candidate may be and still count as tied, so '
+                            'the GLOBA score settles it. 0 means exact ties only. '
+                            'Exact ties are common only while every agent holds the '
+                            'same number of classes, which is true straight out of '
+                            'pretrain and false soon after -- one generation into a '
+                            'real run the sizes were already [2,2,2,3,3,3] and exact '
+                            'ties fired 33%% of the time instead of 100%%. The '
+                            'default 0.15 sits just above --weight-common (0.1), so '
+                            'candidates differing by one SHARED class count as tied '
+                            'while a difference of a whole EXCLUSIVE class (1.0) '
+                            'still decides on the certificate alone. Raise it to '
+                            'hand more of the decision to GLOBA, lower it to keep '
+                            'the certificate in charge.')
     group.add_argument('--mating-rounds', type=int, default=5,
                        help='How many rounds of mate choice to run. Each round: '
                             'everyone still unpaired picks a partner from those '
@@ -681,6 +696,18 @@ def validate(args):
             f'Conflicting settings: {" and ".join(needs_core)} needs a phase-A '
             f'backbone, but --phase-a-ratio is {args.phase_a_ratio}, so phase A '
             f'never runs.')
+
+    if args.mating_mode == 'hybrid' and args.cert_with == 'accuracy':
+        raise SystemExit(
+            'Conflicting settings: --mating-mode hybrid with --cert-with '
+            'accuracy.\n'
+            'Hybrid exists to settle TIES in the certificate score using the '
+            'GLOBA score. Accuracy weighting is continuous, so exact ties '
+            'essentially never occur -- measured on real populations the '
+            'tie-break fired 0% of the time, while a full GLOBA decomposition '
+            'was still computed every generation and discarded.\n'
+            'Use --cert-with count for hybrid, or --mating-mode certificate if '
+            'you want accuracy weighting.')
 
     warn = []
     if args.pretrain_mode != 'ssl' and args.phase_b_freeze > 0:
