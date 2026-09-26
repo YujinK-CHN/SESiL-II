@@ -89,7 +89,9 @@ def training_classes(certificate, num_classes, is_loner=False, rng=None,
 
     'best' and 'worse' need measured accuracy; without it they fall back to
     random rather than failing, since an agent with no measurement yet is a
-    real case at generation 0.
+    real case at generation 0. They also fall back to random when every
+    candidate scores the same, which is common: a freshly pretrained agent
+    scores exactly 0 on every class it was not trained on.
     """
     classes = set(certificate)
 
@@ -105,14 +107,30 @@ def training_classes(certificate, num_classes, is_loner=False, rng=None,
               and len(per_class_accuracy) >= num_classes)
 
     if usable:
-        chooser = max if mode == 'best' else min
-        # Ties broken by class id so a run is repeatable.
-        pick = chooser(sorted(uncertified), key=lambda c: per_class_accuracy[c])
-    elif rng is None:
-        import random as _random
-        pick = _random.choice(uncertified)
+        # Narrow to the classes sharing the extreme value, then choose among
+        # them at random.
+        #
+        # Ties are not a corner case here, they are the common case: an agent
+        # fresh from pretrain scores EXACTLY 0 on every class it was not
+        # trained on -- measured at 100% of agents at generation 0, and still a
+        # third of them well into a run. Breaking such ties by class id made
+        # both modes return the lowest id, so 'best' and 'worse' became the
+        # same rule and both explored class 0 over and over. Randomising means
+        # they degrade to 'random' exactly when there is no signal to act on,
+        # which is the honest behaviour, and stay distinct wherever accuracy
+        # really differs.
+        scores = [per_class_accuracy[c] for c in uncertified]
+        target = max(scores) if mode == 'best' else min(scores)
+        candidates = [c for c in uncertified
+                      if abs(per_class_accuracy[c] - target) < 1e-12]
     else:
-        pick = int(rng.choice(uncertified))
+        candidates = uncertified
+
+    if rng is None:
+        import random as _random
+        pick = _random.choice(candidates)
+    else:
+        pick = int(rng.choice(candidates))
 
     classes.add(pick)
     return sorted(classes)
