@@ -165,9 +165,14 @@ def build_score_matrix(population_info, mode='certificate', **kwargs):
                                   for b in population_info if b is not a}
                 for a in population_info}
 
+    # Hybrid scores on certificates too; what differs is how ties are settled.
+    if mode == 'hybrid':
+        mode = 'certificate'
+
     if mode != 'certificate':
         raise ValueError(
-            f"Unknown mating mode {mode!r}; expected 'certificate' or 'random'.")
+            f'Unknown mating mode {mode!r}; expected certificate, random, '
+            f'globa or hybrid.')
 
     scores = {}
     for agent_a in population_info:
@@ -190,6 +195,8 @@ def _score_kwargs(args):
     """
     if args.mating_mode == 'random':
         return {}
+    if args.mating_mode == 'globa':
+        return {}
     return dict(
         weight_extra=args.weight_extra,
         weight_common=args.weight_common,
@@ -201,6 +208,31 @@ def best_choice(score_dict):
     if not score_dict:
         return None
     return max(sorted(score_dict), key=lambda m: score_dict[m])
+
+
+def lexicographic_choice(primary, secondary, tolerance=1e-9):
+    """Highest primary score; ties settled by the secondary score.
+
+    This exists because the certificate score has almost no resolution. It
+    counts classes, so with 3 classes per agent every fully disjoint couple
+    scores the same 3.0 -- measured on real populations, 12 or 13 of 28 pairs
+    tie at the top and only 3 distinct values exist across the whole matrix.
+    Taking its argmax is therefore an arbitrary pick among a dozen candidates,
+    which is why complementarity correlated well with merge outcome (rho about
+    +0.5) and still never reached the top quartile in six seeds.
+
+    The secondary score is continuous and measures something else -- the two
+    agree only about 24% of the time -- so it can order what the primary cannot
+    separate. It never overrides the primary: a candidate outside the tied top
+    can never win, whatever its secondary score.
+    """
+    if not primary:
+        return None
+    top = max(primary.values())
+    tied = [m for m in sorted(primary) if primary[m] >= top - tolerance]
+    if len(tied) == 1 or not secondary:
+        return tied[0]
+    return max(tied, key=lambda m: secondary.get(m, 0.0))
 
 
 def probabilistic_choice(score_dict):
@@ -219,7 +251,7 @@ def probabilistic_choice(score_dict):
 # Strategy
 # --------------------------------------------------------------------------- #
 
-def select_mates(population_info, args, scores=None):
+def select_mates(population_info, args, scores=None, tiebreak=None):
     """Mutual mate choice, in rounds.
 
     One round: every agent still in the pool picks a partner from the agents
@@ -250,7 +282,8 @@ def select_mates(population_info, args, scores=None):
         scores = build_score_matrix(population_info, mode=args.mating_mode,
                                     **_score_kwargs(args))
 
-    deterministic = args.mating_mode == 'globa'
+    hybrid = args.mating_mode == 'hybrid' and tiebreak is not None
+    deterministic = args.mating_mode == 'globa' or hybrid
     agents = list(scores.keys())
     n_agents = len(agents)
 
@@ -265,8 +298,14 @@ def select_mates(population_info, args, scores=None):
         choices = {}
         for m in pool:
             options = {k: v for k, v in scores[m].items() if k not in paired}
-            choices[m] = (best_choice(options) if deterministic
-                          else probabilistic_choice(options))
+            if hybrid:
+                choices[m] = lexicographic_choice(
+                    options, {k: v for k, v in tiebreak[m].items()
+                              if k not in paired})
+            elif deterministic:
+                choices[m] = best_choice(options)
+            else:
+                choices[m] = probabilistic_choice(options)
 
         new_pairs = []
         for a, b in choices.items():

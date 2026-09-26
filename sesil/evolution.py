@@ -434,7 +434,8 @@ def _load_globa_core(args):
     decomposition would be describing initialisation noise.
     """
     needs = [flag for flag, on in (
-        ('--mating-mode globa', args.mating_mode == 'globa'),
+        ('--mating-mode ' + args.mating_mode,
+         args.mating_mode in ('globa', 'hybrid')),
         ('--merger globa', args.merger == 'globa'),
     ) if on]
     if not needs:
@@ -506,7 +507,15 @@ def run_evolution(args, budget, data, logger, evaluator):
                       f'({args.globa_with}) took {time.time() - t0:.1f}s')
                 del states
 
-            pairs, loners = select_mates(population_info, args, scores=pair_scores)
+            # In hybrid mode the GLOBA matrix settles ties in the certificate
+            # score rather than being the score itself, so it is passed
+            # separately and selection builds the certificate matrix as usual.
+            if args.mating_mode == 'hybrid':
+                pairs, loners = select_mates(population_info, args,
+                                             tiebreak=pair_scores)
+            else:
+                pairs, loners = select_mates(population_info, args,
+                                             scores=pair_scores)
             print(f'[gen {generation}] {len(pairs)} couples, {len(loners)} loners')
             logger.log_train({
                 'stage': 'mating',

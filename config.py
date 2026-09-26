@@ -361,7 +361,7 @@ def _add_certificate_config(parser):
 def _add_selection_config(parser):
     group = parser.add_argument_group('selection')
     group.add_argument('--mating-mode', type=str, default='certificate',
-                       choices=['certificate', 'random', 'globa'],
+                       choices=['certificate', 'random', 'globa', 'hybrid'],
                        help="What mate choice is based on. 'certificate' scores a "
                             "mate by the classes it is certified on, tuned by "
                             "--cert-with / --weight-extra / --weight-common. "
@@ -372,7 +372,16 @@ def _add_selection_config(parser):
                             "the weights. 'globa' scores a pair by decomposing "
                             'their task vectors against the phase-A backbone, tuned '
                             'by --globa-with; it needs --pretrain-mode ssl and it '
-                            'picks the best-predicted partner rather than sampling.')
+                            "picks the best-predicted partner rather than sampling. "
+                            "'hybrid' uses the certificate score as primary and the "
+                            'GLOBA score only to settle ties. That exists because '
+                            'the certificate score barely discriminates -- it counts '
+                            'classes, so 12 or 13 of 28 pairs tie at the top and only '
+                            '3 distinct values exist across a whole population. The '
+                            'two signals agree about 24% of the time, so the GLOBA '
+                            'score can order what the certificate cannot separate '
+                            'without ever overriding it. Also needs '
+                            '--pretrain-mode ssl.')
     group.add_argument('--globa-with', type=str, default='D_minus',
                        choices=['D_minus', 'D_plus', 'E'],
                        help="GLOBA MODE ONLY. Which cell type scores a pair. "
@@ -426,7 +435,7 @@ def _add_selection_config(parser):
                             'already hold. The ratio to --weight-extra is what makes '
                             'selection complementarity-seeking (extra > common), '
                             'neutral, or similarity-seeking (common > extra).')
-    group.add_argument('--mating-rounds', type=int, default=100,
+    group.add_argument('--mating-rounds', type=int, default=5,
                        help='How many rounds of mate choice to run. Each round: '
                             'everyone still unpaired picks a partner from those '
                             'still unpaired, reciprocated picks become couples, and '
@@ -435,8 +444,10 @@ def _add_selection_config(parser):
                             'carries forward and earns one random UNCERTIFIED class, '
                             'which is the only way a class the population has lost '
                             'can return. 1 makes a loner of anyone whose first choice '
-                            'did not reciprocate; the default 100 keeps re-matching '
-                            'until almost nobody is left, so almost nobody explores. '
+                            'did not reciprocate. The default 5 is bounded on purpose: '
+                            'agents that genuinely do not match are left unpaired '
+                            'rather than forced together after enough retries, which '
+                            'is what 100 amounted to. '
                             'Replaces --max-retries, which meant the same thing for '
                             'the sampled modes only.')
 
@@ -647,7 +658,8 @@ def validate(args):
     result gets misattributed later.
     """
     needs_core = [flag for flag, on in (
-        ('--mating-mode globa', args.mating_mode == 'globa'),
+        ('--mating-mode ' + args.mating_mode,
+         args.mating_mode in ('globa', 'hybrid')),
         ('--merger globa', args.merger == 'globa'),
         ('--probe-merger ' + str(getattr(args, 'probe_merger', '')),
          args.method == 'probe' and getattr(args, 'probe_merger', 'sesil') in ('globa', 'both')),
@@ -686,10 +698,10 @@ def validate(args):
         if args.globa_preset != 'globa':
             warn.append(f'--globa-preset {args.globa_preset} is ignored '
                         f'without --merger globa')
-    if args.mating_mode != 'globa' and args.globa_with != 'D_minus':
+    if args.mating_mode not in ('globa', 'hybrid') and args.globa_with != 'D_minus':
         warn.append(f'--globa-with {args.globa_with} is ignored without '
                     f'--mating-mode globa')
-    if args.mating_mode != 'certificate':
+    if args.mating_mode not in ('certificate', 'hybrid'):
         if args.cert_with != 'count':
             warn.append(f'--cert-with {args.cert_with} is ignored under '
                         f'--mating-mode {args.mating_mode}')

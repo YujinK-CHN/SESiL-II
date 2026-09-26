@@ -43,7 +43,7 @@ REFERENCE_DEFAULTS = {
     'cert_with': 'count',
     'weight_extra': 1.0,
     'weight_common': 0.1,
-    'mating_rounds': 100,
+    'mating_rounds': 5,
     'merger': 'permute',
     'merge_head': 'average',
     'stop_node': None,
