@@ -147,7 +147,35 @@ def group_runs(runs):
 # Aggregation across seeds
 # --------------------------------------------------------------------------- #
 
-def aggregate(runs, metric, band):
+def x_value(record, x_axis, fwd_bwd_ratio):
+    """The x coordinate for one evaluation point.
+
+    'budget' is backpropagation only -- the unit the two methods are matched
+    on, and the one that is exactly proportional to training FLOPs because
+    every model here shares an architecture.
+
+    'total-flops' adds the forward-only work: BatchNorm recalibration, merge
+    alignment and per-generation evaluation. SESiL does a great deal of this
+    and the baseline does almost none -- measured at 78 forward passes against
+    3.4 charged epoch-equivalents in one small run, and it grows with
+    population size. Excluding it is defensible (no gradients are computed)
+    but it is not nothing, so this axis prices it in:
+
+        one epoch-equivalent  = forward + backward = (1 + ratio) forward units
+        N forward-only passes = N / (1 + ratio) epoch-equivalents
+
+    The ratio is hardware- and implementation-dependent, which is exactly why
+    it is a flag rather than a constant baked into the accounting. Plotting
+    both axes is how you find the boundary of a claim before a reviewer does.
+    """
+    budget = float(record['budget'])
+    if x_axis != 'total-flops':
+        return budget
+    forward = float(record.get('forward_train_passes', 0.0) or 0.0)
+    return budget + forward / (1.0 + fwd_bwd_ratio)
+
+
+def aggregate(runs, metric, band, x_axis='budget', fwd_bwd_ratio=2.0):
     """Collapse seeds into (x, centre, lo, hi).
 
     Seeds of one configuration normally share identical x-values, because
@@ -158,7 +186,8 @@ def aggregate(runs, metric, band):
     """
     curves = []
     for run in runs:
-        xs = np.array([r['budget'] for r in run['records']], dtype=float)
+        xs = np.array([x_value(r, x_axis, fwd_bwd_ratio)
+                       for r in run['records']], dtype=float)
         ys = np.array([r[metric] for r in run['records']], dtype=float)
         order = np.argsort(xs)
         curves.append((xs[order], ys[order]))
@@ -206,7 +235,8 @@ def print_table(series_data, metric, band):
         print()
 
 
-def render(series_data, phase_starts, metric, band, out_path, mode, title, ylabel=None):
+def render(series_data, phase_starts, metric, band, out_path, mode, title,
+           ylabel=None, xlabel='Training budget  (epoch-equivalents)'):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -258,7 +288,7 @@ def render(series_data, phase_starts, metric, band, out_path, mode, title, ylabe
                     color=colour, fontsize=9.5, zorder=5,
                     annotation_clip=False)
 
-    ax.set_xlabel('Training budget  (epoch-equivalents)', color=t['ink_2'], fontsize=10)
+    ax.set_xlabel(xlabel, color=t['ink_2'], fontsize=10)
     ax.set_ylabel(ylabel or METRIC_LABELS.get(metric, metric),
                   color=t['ink_2'], fontsize=10)
     ax.set_title(title, color=t['ink'], fontsize=12, pad=14, loc='left')
@@ -284,6 +314,25 @@ def render(series_data, phase_starts, metric, band, out_path, mode, title, ylabe
 def main():
     p = argparse.ArgumentParser(
         description='Plot SESiL / baseline runs on the shared budget axis.')
+    p.add_argument('--x-axis', default='budget',
+                    choices=['budget', 'total-flops'],
+                    help="What the x axis measures. 'budget' (default) is "
+                         'backpropagation only -- the unit the methods are '
+                         "matched on. 'total-flops' also prices in the "
+                         'forward-only work (BatchNorm recalibration, merge '
+                         'alignment, evaluation), which SESiL does far more of '
+                         'than the baseline. Plot both: if SESiL wins on each, '
+                         'the claim is robust; if it wins only on budget, the '
+                         'honest claim is "more efficient per gradient step", '
+                         'not "more efficient overall".')
+    p.add_argument('--fwd-bwd-ratio', type=float, default=2.0,
+                    help='Cost of a backward pass relative to a forward pass, '
+                         'used only by --x-axis total-flops. One epoch-'
+                         'equivalent is then (1 + ratio) forward units. The '
+                         'usual rule of thumb is 2. It is a flag because the '
+                         'true value is hardware- and implementation-'
+                         'dependent, and a claim that survives a range of it '
+                         'is worth more than one tuned to a single number.')
     p.add_argument('root', help='results directory to search for eval.jsonl files')
     p.add_argument('--metric', default=DEFAULT_METRIC,
                    help=f'which reduction to plot (default: {DEFAULT_METRIC})')
@@ -366,7 +415,9 @@ def main():
             raise SystemExit(
                 f'Metric {args.metric!r} not in {missing[0]}. '
                 f'Run with --list-metrics to see what is available.')
-        series_data[name] = aggregate(members, args.metric, args.band)
+        series_data[name] = aggregate(members, args.metric, args.band,
+                                      x_axis=args.x_axis,
+                                      fwd_bwd_ratio=args.fwd_bwd_ratio)
         if series_data[name][5]:
             print(f'  NOTE: seeds of {name!r} have different budget grids; '
                   f'interpolated onto their overlap. Compare with care.')
@@ -379,8 +430,14 @@ def main():
 
     out = args.out or os.path.join(args.root, f'{args.metric}.png')
     title = args.title or f'Budget-matched comparison  ({os.path.basename(os.path.normpath(args.root))})'
-    render(series_data, [r['phase_start'] for r in runs],
-           args.metric, args.band, out, args.mode, title, args.ylabel)
+    xlabel = ('Training budget  (epoch-equivalents, backprop only)'
+              if args.x_axis == 'budget' else
+              f'Total compute  (epoch-equivalents, backward = {args.fwd_bwd_ratio:g}x forward)')
+    # The pretrain phase line is drawn in budget units, so it only lines up on
+    # the budget axis; on the FLOPs axis its position would be wrong.
+    phase = [] if args.x_axis == 'total-flops' else [r['phase_start'] for r in runs]
+    render(series_data, phase,
+           args.metric, args.band, out, args.mode, title, args.ylabel, xlabel)
 
 
 if __name__ == '__main__':
