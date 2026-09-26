@@ -275,6 +275,23 @@ def _add_evolution_config(parser):
                             'Values below 1.0 mean sub-epoch training, which is how you '
                             'buy resolution: halving it doubles the number of '
                             'generations for the same --budget.')
+    group.add_argument('--mutation-mode', type=str, default='random',
+                       choices=['random', 'best', 'worse'],
+                       help='How the ONE exploration class is chosen for loners '
+                            'and for agents with an empty certificate. Offspring '
+                            'are unaffected -- they always train on their '
+                            "certificate, which is the union of their parents'. "
+                            'This slot is the only way a class the population has '
+                            'lost can return, because mutation otherwise trains '
+                            'solely on certified classes. '
+                            "'random' picks uniformly (the original scheme). "
+                            "'best' picks the uncertified class the agent already "
+                            'scores highest on -- exploitative, most likely to '
+                            "convert into a certificate next generation. 'worse' "
+                            'picks the one it scores lowest on -- exploratory, '
+                            'targeting exactly what the population is furthest '
+                            'from holding, at the cost of being hardest to learn '
+                            'in one generation.')
     group.add_argument('--no-mutation', action='store_true', default=False,
                        help='Skip the finetune step entirely.')
     group.add_argument('--start-gen', type=int, default=0,

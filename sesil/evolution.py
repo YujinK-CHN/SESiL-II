@@ -221,6 +221,10 @@ def _breed_globa(pairs, loners, population_info, models, args, data,
                 'parents': list(pair),
                 'head': head_index,
                 'is_loner': False,
+                # Carried so --mutation-mode best/worse can pick an
+                # exploration class from measured performance rather than at
+                # random. Already computed just above, so this costs nothing.
+                'per_class': per_class,
             })
 
     del states
@@ -233,6 +237,7 @@ def _breed_globa(pairs, loners, population_info, models, args, data,
             'parents': [loner],
             'head': None,
             'is_loner': True,
+            'per_class': by_id[loner].get('Per Class'),
         })
 
     return offspring
@@ -310,6 +315,9 @@ def breed(pairs, loners, population_info, models, raw_config, args, data,
                 'parents': list(pair),
                 'head': head_index,
                 'is_loner': False,
+                # Carried so --mutation-mode best/worse can pick an exploration
+                # class from measured performance. Computed just above anyway.
+                'per_class': per_class,
             })
 
     for loner in tqdm(loners, desc=f'Gen {generation}: carrying loners'):
@@ -332,6 +340,7 @@ def breed(pairs, loners, population_info, models, raw_config, args, data,
             'parents': [loner],
             'head': None,
             'is_loner': True,
+            'per_class': by_id[loner].get('Per Class'),
         })
 
     return offspring
@@ -372,6 +381,7 @@ def mutate_and_save(offspring, args, data, next_dir, budget, logger, generation)
         classes = training_classes(
             child['certificate'], args.num_classes,
             is_loner=child['is_loner'], rng=rng,
+            mode=args.mutation_mode, per_class_accuracy=child.get('per_class'),
         )
         explored = sorted(set(classes) - set(child['certificate']))
 

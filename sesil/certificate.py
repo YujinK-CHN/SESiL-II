@@ -62,31 +62,59 @@ def certify_population(per_class_accuracy, top_frac, floor, num_classes):
     return certificates
 
 
-def training_classes(certificate, num_classes, is_loner=False, rng=None):
+def training_classes(certificate, num_classes, is_loner=False, rng=None,
+                     mode='random', per_class_accuracy=None):
     """Which classes an agent may actually be finetuned on this generation.
 
-    Certified classes, plus one exploration slot for agents that did not pair
-    off. Failing to find a mate buys the right to try something new -- and an
-    agent whose certificate is empty is worth nothing to any mate, so it lands
-    in the loner pool by construction and is never left with nothing to train
-    on.
+    An OFFSPRING trains on its certificate and nothing else. Its certificate is
+    the union of its parents', so it keeps studying everything either parent
+    was good at -- that is what stops the merge's knowledge from decaying.
 
-    The empty-certificate case is handled explicitly as well as via `is_loner`
-    so that an agent can never be left with nothing to train on, however mate
-    selection happens to pair it.
+    A LONER, and any agent whose certificate is empty, also gets ONE
+    uncertified class. That slot is the only way knowledge from outside the
+    population's current coverage gets in: mutation trains solely on certified
+    classes, so a class that falls below the floor everywhere can never be
+    relearned through the normal path.
+
+    --mutation-mode chooses which uncertified class:
+
+        random  uniformly at random. The original scheme, and unbiased.
+        best    the one it already scores highest on. Exploitative: the class
+                it is closest to earning a certificate in, so the slot is most
+                likely to convert into coverage next generation.
+        worse   the one it scores lowest on. Exploratory: the class the
+                population is furthest from holding, so it targets exactly
+                what has been lost -- at the cost of being the hardest to
+                learn from one generation of training.
+
+    'best' and 'worse' need measured accuracy; without it they fall back to
+    random rather than failing, since an agent with no measurement yet is a
+    real case at generation 0.
     """
     classes = set(certificate)
 
-    if is_loner or not classes:
-        uncertified = [c for c in range(num_classes) if c not in classes]
-        if uncertified:
-            if rng is None:
-                import random as _random
-                pick = _random.choice(uncertified)
-            else:
-                pick = int(rng.choice(uncertified))
-            classes.add(pick)
+    if not (is_loner or not classes):
+        return sorted(classes)
 
+    uncertified = [c for c in range(num_classes) if c not in classes]
+    if not uncertified:
+        return sorted(classes)
+
+    usable = (mode in ('best', 'worse')
+              and per_class_accuracy is not None
+              and len(per_class_accuracy) >= num_classes)
+
+    if usable:
+        chooser = max if mode == 'best' else min
+        # Ties broken by class id so a run is repeatable.
+        pick = chooser(sorted(uncertified), key=lambda c: per_class_accuracy[c])
+    elif rng is None:
+        import random as _random
+        pick = _random.choice(uncertified)
+    else:
+        pick = int(rng.choice(uncertified))
+
+    classes.add(pick)
     return sorted(classes)
 
 
