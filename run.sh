@@ -81,10 +81,45 @@ echo "budget  : $BUDGET"
 echo "seeds   : ${SEED_LIST[*]}"
 echo "methods : ${METHODS[*]}"
 echo "mode    : $RUN_MODE"
+IFS=',' read -ra GPU_LIST <<< "$GPUS"
+
+# Does the caller pin the device themselves? Then leave it alone.
+EXPLICIT_DEVICE=0
+for a in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
+  [[ "$a" == "--device" ]] && EXPLICIT_DEVICE=1
+done
+
+# PINNED MODE. When --seeds and --gpus are the same length, seed i goes to
+# gpu i, by position, and nothing is negotiated at run time.
+#
+# Worth having over the claim-a-free-card scheme for two reasons. The mapping
+# is knowable before launch, so "seed 3 died" tells you which card to look at.
+# And --device is then explicit, which makes sesil/gpu.py skip claim_gpu()
+# entirely -- including the free_gb() sweep that reads every allowed card's
+# memory and, as a side effect of asking, leaves a ~400 MiB CUDA context on
+# each one. Five runs over four cards stranded about 2 GiB per card that way.
+#
+# Any other combination keeps the old behaviour: each run claims the
+# least-loaded allowed card, which is what you want when the counts do not
+# line up.
+PIN_GPUS=0
+if [[ -n "$GPUS" && ${#GPU_LIST[@]} -eq ${#SEED_LIST[@]} && $EXPLICIT_DEVICE -eq 0 ]]; then
+  PIN_GPUS=1
+fi
+
 if [[ -n "$GPUS" ]]; then
-  # Read by sesil/gpu.py when --device is not given explicitly.
-  export SESIL_GPUS="$GPUS"
-  echo "gpus    : $GPUS  (best free one claimed per run)"
+  if [[ $PIN_GPUS -eq 1 ]]; then
+    MAP=""
+    for i in "${!SEED_LIST[@]}"; do
+      MAP+="seed${SEED_LIST[$i]}->cuda:${GPU_LIST[$i]} "
+    done
+    echo "gpus    : $GPUS  (pinned one-to-one: $MAP)"
+  else
+    # Read by sesil/gpu.py when --device is not given explicitly.
+    export SESIL_GPUS="$GPUS"
+    echo "gpus    : $GPUS  (${#GPU_LIST[@]} gpu(s) for ${#SEED_LIST[@]} seed(s)"
+    echo "          -> not pinned; each run claims the least-loaded allowed card)"
+  fi
 else
   echo "gpus    : all visible"
 fi
@@ -93,7 +128,7 @@ fi
 # they stack. sesil/gpu.py refuses past --max-per-gpu, but it does so one run
 # at a time and several minutes in; saying it here costs nothing and stops the
 # whole sweep before any of it starts.
-if [[ "$RUN_MODE" == "parallel" && -n "$GPUS" ]]; then
+if [[ "$RUN_MODE" == "parallel" && -n "$GPUS" && $PIN_GPUS -eq 0 ]]; then
   N_GPUS=$(awk -F, '{print NF}' <<< "$GPUS")
   N_JOBS=$(( ${#SEED_LIST[@]} * ${#METHODS[@]} ))
   if (( N_JOBS > N_GPUS )); then
@@ -116,15 +151,30 @@ for method in "${METHODS[@]}"; do
     exit 1
   fi
 
-  for seed in "${SEED_LIST[@]}"; do
-    echo ">> $method  seed=$seed"
+  for i in "${!SEED_LIST[@]}"; do
+    seed="${SEED_LIST[$i]}"
+
+    # Pinned mode passes the device outright; otherwise nothing is added and
+    # sesil/gpu.py claims a card as before.
+    DEVICE_ARGS=()
+    if [[ $PIN_GPUS -eq 1 ]]; then
+      DEVICE_ARGS=(--device "cuda:${GPU_LIST[$i]}")
+      echo ">> $method  seed=$seed  on cuda:${GPU_LIST[$i]}"
+    else
+      echo ">> $method  seed=$seed"
+    fi
+
     if [[ "$RUN_MODE" == "parallel" ]]; then
-      bash "$script" --seed "$seed" "${COMMON_ARGS[@]}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} &
+      bash "$script" --seed "$seed" "${COMMON_ARGS[@]}" \
+        ${DEVICE_ARGS[@]+"${DEVICE_ARGS[@]}"} \
+        ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} &
       PIDS+=($!)
       LABELS+=("$method/seed$seed")
       sleep 5
     else
-      bash "$script" --seed "$seed" "${COMMON_ARGS[@]}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+      bash "$script" --seed "$seed" "${COMMON_ARGS[@]}" \
+        ${DEVICE_ARGS[@]+"${DEVICE_ARGS[@]}"} \
+        ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
         || echo "!! $method seed=$seed FAILED, continuing."
     fi
   done
