@@ -27,6 +27,7 @@ Groups:
 """
 
 import argparse
+import json
 import os
 
 
@@ -73,7 +74,7 @@ def _add_run_config(parser):
     group.add_argument('--dataset', type=str, default='cifar10',
                        choices=sorted(DATASET_PRESETS.keys()),
                        help='Which environment to run in.')
-    group.add_argument('--budget', type=float, default=100,
+    group.add_argument('--budget', type=float, default=400,
                        help='Total training budget, in EPOCH-EQUIVALENTS: one unit '
                             'is a single backprop pass over the full training set. '
                             'This is the common currency that makes SESiL and the '
@@ -129,7 +130,7 @@ def _add_run_config(parser):
                        help='Root for all run artefacts (checkpoints + csv).')
     group.add_argument('--data-dir', type=str, default='./data',
                        help='Root holding the raw dataset downloads.')
-    group.add_argument('--eval-interval', type=float, default=5.0,
+    group.add_argument('--eval-interval', type=float, default=10.0,
                        help='Epoch-equivalents between external evaluation points. '
                             'Evaluation fires on a WATERMARK over spent budget, not '
                             'every N iterations, so SESiL (which advances in '
@@ -169,9 +170,9 @@ def _add_pretrain_config(parser):
     initialised models.
     """
     group = parser.add_argument_group('pretrain')
-    group.add_argument('--pop-size', type=int, default=10,
+    group.add_argument('--pop-size', type=int, default=20,
                        help='Number of individuals in the initial population.')
-    group.add_argument('--society-classes', type=int, default=None,
+    group.add_argument('--society-classes', type=int, default=40,
                        help="How many of the world's classes the society is aware "
                             'of when the initial population is built. Unset means '
                             'the whole label space (the original scheme). Setting '
@@ -194,7 +195,7 @@ def _add_pretrain_config(parser):
                             "it stays available as a baseline / ablation. 'ssl' runs "
                             "the two-phase scheme: one shared backbone trained on all "
                             "classes (phase A), then per-agent finetuning (phase B).")
-    group.add_argument('--pretrain-budget', type=float, default=10.0,
+    group.add_argument('--pretrain-budget', type=float, default=20.0,
                        help='Budget for the whole pretrain stage, in epoch-equivalents, '
                             'carved out of --budget. Split between phase A and phase B '
                             'by --phase-a-ratio.')
@@ -279,7 +280,7 @@ def _add_evolution_config(parser):
                             'statistics, so it touches no training data beyond the '
                             "BatchNorm recalibration each child needs. 'globa' "
                             'requires --pretrain-mode ssl.')
-    group.add_argument('--individual-budget', type=float, default=0.25,
+    group.add_argument('--individual-budget', type=float, default=0.5,
                        help='Training budget granted to ONE agent in ONE generation, '
                             'in the same epoch-equivalent unit as --budget. Each agent '
                             'is finetuned on exactly this many sample-presentations '
@@ -604,11 +605,17 @@ def _add_baseline_config(parser):
                             'SESiL then cannot win merely by having explored '
                             'better. Needs --curriculum-from.')
     group.add_argument('--curriculum-from', type=str, default=None,
-                       help="CURRICULUM MODE ONLY. The SESiL run directory to "
-                            'replay -- the one holding eval.jsonl and train.jsonl, '
-                            'not the experiment root. Its society records supply '
-                            'both the class sets and the budget marks, so the two '
-                            'curves land on the same x axis by construction.')
+                       help="CURRICULUM MODE ONLY. The SESiL run to replay. Give "
+                            'either the seed directory itself (the one holding '
+                            'eval.jsonl and train.jsonl) or its PARENT, in which '
+                            "case seed<--seed> is appended so each baseline seed "
+                            "replays its own SESiL seed. Pass the parent whenever "
+                            'several seeds are launched from one command line, '
+                            'since a fixed seed directory would replay one '
+                            "seed's curriculum under every seed label. Its society "
+                            'records supply both the class sets and the budget '
+                            'marks, so the two curves land on the same x axis by '
+                            'construction.')
     group.add_argument('--baseline-classes', type=str, default=None,
                        help='Comma-separated class ids, or unset for the full dataset.')
     group.add_argument('--finetune-classes', type=str, default=None,
@@ -762,6 +769,13 @@ def validate(args):
                 '--baseline-mode curriculum requires --curriculum-from <run dir>, '
                 'pointing at the SESiL run whose society space should be '
                 'replayed.')
+    if args.curriculum_from and args.baseline_mode != 'curriculum':
+        raise SystemExit(
+            f'--curriculum-from {args.curriculum_from!r} does nothing without '
+            f'--baseline-mode curriculum (this run is '
+            f'{args.method}/{args.baseline_mode}). Refusing rather than '
+            f'silently ignoring it, because a sweep that meant to launch '
+            f'curriculum baselines and got scratch ones looks like a result.')
 
     warn = []
     if args.pretrain_mode != 'ssl' and args.phase_b_freeze > 0:
@@ -793,6 +807,62 @@ def validate(args):
     return args
 
 
+def resolve_curriculum_from(args):
+    """Turn --curriculum-from into the seed directory this run must replay.
+
+    Accepts the seed directory itself, or its parent -- in which case
+    seed<--seed> is appended. The parent form is the one to use for a sweep:
+    run.sh passes every unrecognised flag through unchanged to all seeds, so a
+    fixed seed directory would make seeds 0, 1 and 2 all replay seed 0's
+    curriculum and write three identical baselines under three different seed
+    labels. That failure is invisible in the plot -- it shows up as a baseline
+    with suspiciously tight error bars -- so it is resolved here instead.
+
+    Whichever form is given, the resolved directory's own recorded seed is
+    checked against this run's. A mismatch is refused: a baseline replaying a
+    different seed's curriculum is not a paired comparison, and the x axes
+    would not correspond.
+    """
+    path = args.curriculum_from
+
+    if os.path.exists(os.path.join(path, 'train.jsonl')):
+        resolved = path
+    else:
+        candidate = os.path.join(path, f'seed{args.seed}')
+        if os.path.exists(os.path.join(candidate, 'train.jsonl')):
+            resolved = candidate
+        else:
+            available = sorted(
+                d for d in (os.listdir(path) if os.path.isdir(path) else [])
+                if d.startswith('seed'))
+            raise SystemExit(
+                f'--curriculum-from {path!r} holds neither train.jsonl nor '
+                f'{os.path.basename(candidate)}/train.jsonl.\n'
+                f'  seed directories found: {available or "none"}\n'
+                f'Point it at a finished SESiL seed directory, or at the parent '
+                f'holding seed<N> directories.')
+
+    # The recorded seed is authoritative: the directory name is only a
+    # convention, and a resumed or hand-copied run can disagree with it.
+    config_path = os.path.join(resolved, 'config.json')
+    if os.path.exists(config_path):
+        try:
+            with open(config_path) as f:
+                recorded = json.load(f).get('config', {}).get('seed')
+        except (ValueError, OSError):
+            recorded = None
+        if recorded is not None and int(recorded) != int(args.seed):
+            raise SystemExit(
+                f'--curriculum-from resolved to {resolved!r}, but that run '
+                f'recorded seed {recorded} while this baseline is seed '
+                f'{args.seed}.\n'
+                f"A baseline replaying another seed's curriculum is not a "
+                f'paired comparison. Pass the PARENT directory so each seed '
+                f'resolves its own, or fix the path.')
+
+    return resolved
+
+
 def resolve(args):
     """Fill in values that depend on other flags. Call once after parsing.
 
@@ -817,6 +887,9 @@ def resolve(args):
     # different amount depending on how many labels the population covers, so
     # the loop spends the budget and stops when it runs out.
     args.baseline_epochs = int(args.budget)
+
+    if args.curriculum_from:
+        args.curriculum_from = resolve_curriculum_from(args)
 
     args.run_dir = run_dir(args)
     # Generation 0 is just the first generation, written into this run's own

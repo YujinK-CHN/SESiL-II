@@ -197,7 +197,7 @@ def society_pool(args, num_classes):
     lands somewhere new.
 
     Drawn with the run's seed, so different seeds get different worlds and
-    results are not an artefact of which 30 classes happened to come first.
+    results are not an artefact of which classes happened to come first.
     """
     size = getattr(args, 'society_classes', None)
     if not size or size >= num_classes:

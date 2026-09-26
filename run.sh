@@ -30,6 +30,18 @@
 #   bash run.sh --dataset cifar10 --budget 500 --seeds 0 --method sesil
 #   bash run.sh --dataset cifar10 --budget 500 --seeds 0 --method baseline
 #
+# PAIRED SWEEP (curriculum baseline). Run SESiL first, then point the baseline
+# at the PARENT of its seed directories -- not at one seed -- so each baseline
+# seed replays the SESiL seed of the same number:
+#
+#   bash run.sh --exp-name main --dataset cifar100 --budget 400 --seeds 0,1,2 #        --method sesil
+#   bash run.sh --exp-name main --dataset cifar100 --budget 400 --seeds 0,1,2 #        --method baseline --baseline-mode curriculum #        --curriculum-from results/main/cifar100/permute
+#
+# Every unrecognised flag is passed through to ALL seeds unchanged, which is
+# why the parent form matters: a fixed .../seed0 path would make every baseline
+# replay seed 0 and write identical curves under different seed labels. config.py
+# refuses that outright rather than letting it through.
+#
 # Any unrecognised flag is passed through to config.py, so a one-off override is
 # still possible without editing anything:
 #   bash run.sh --dataset cifar10 --budget 500 --seeds 0 --merger zipit
@@ -38,7 +50,7 @@ set -euo pipefail
 
 # ───────────────────────── the three knobs ──────────────────────────
 DATASET="cifar10"
-BUDGET=500
+BUDGET=400
 SEEDS="0"
 
 # ───────────────────────── run control ──────────────────────────────
