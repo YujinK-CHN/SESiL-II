@@ -64,12 +64,29 @@ def main(argv=None):
         budget=budget,
         # Carried on every eval record so plot_results can separate variants
         # without anyone having to remember which directory was which.
+        # Carried on every eval record so plot_results can tell one arm from
+        # another. Anything NOT here is invisible to the plot, and two runs
+        # that differ only by a missing field silently merge into one series
+        # and get averaged as though they were seeds of the same condition --
+        # which is exactly how a comparison experiment produces a flat result
+        # for the wrong reason. Everything that defines a SESiL-II arm belongs
+        # in this dict.
         meta={'method': args.method, 'seed': args.seed, 'dataset': args.dataset,
               'merger': args.merger if args.method == 'sesil' else None,
               'pretrain_mode': args.pretrain_mode if args.method == 'sesil' else None,
               'phase_a_method': (args.phase_a_method
                                  if args.method == 'sesil'
                                  and args.pretrain_mode == 'ssl' else None),
+              'mating_mode': args.mating_mode if args.method == 'sesil' else None,
+              'cert_with': args.cert_with if args.method == 'sesil' else None,
+              'globa_with': (args.globa_with if args.method == 'sesil'
+                             and args.mating_mode in ('globa', 'hybrid') else None),
+              'mutation_mode': args.mutation_mode if args.method == 'sesil' else None,
+              'merge_head': args.merge_head if args.method == 'sesil' else None,
+              'globa_preset': (args.globa_preset if args.method == 'sesil'
+                               and args.merger == 'globa' else None),
+              'subset_mode': args.subset_mode if args.method == 'sesil' else None,
+              'mating_rounds': args.mating_rounds if args.method == 'sesil' else None,
               'baseline_init': (args.baseline_init
                                 if args.method == 'baseline' else None)},
     )

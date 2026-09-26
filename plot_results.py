@@ -78,6 +78,21 @@ def find_runs(root):
     return sorted(runs)
 
 
+# The SESiL reference. A run differing from any of these is a different arm
+# and must get its own series; a run matching all of them is the baseline
+# configuration and is labelled by merger and pretrain alone.
+SESIL_REFERENCE = {
+    'mating_mode': 'certificate',
+    'cert_with': 'count',
+    'globa_with': None,
+    'mutation_mode': 'random',
+    'merge_head': 'average',
+    'globa_preset': None,
+    'subset_mode': 'random',
+    'mating_rounds': 5,
+}
+
+
 def load_run(run_dir):
     """Records from one run, plus how it should be labelled and grouped."""
     records = []
@@ -95,7 +110,16 @@ def load_run(run_dir):
     pretrain = head.get('pretrain_mode')
 
     if method == 'sesil':
+        # Label by merger and pretrain always, then by anything that DIFFERS
+        # from the SESiL reference. Two arms must never share a series name --
+        # they would be averaged together as if they were seeds of one
+        # condition -- but naming every flag every time makes the legend
+        # unreadable, so only the differences are shown.
         parts = [p for p in (merger, pretrain) if p]
+        for field, default in SESIL_REFERENCE.items():
+            value = head.get(field)
+            if value is not None and value != default:
+                parts.append(f'{field.replace("_", "-")}={value}')
         series = f'{method} ({", ".join(parts)})' if parts else method
     else:
         # The baseline's variants differ by where they start, not how they merge.
