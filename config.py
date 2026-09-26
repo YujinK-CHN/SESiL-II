@@ -171,6 +171,19 @@ def _add_pretrain_config(parser):
     group = parser.add_argument_group('pretrain')
     group.add_argument('--pop-size', type=int, default=10,
                        help='Number of individuals in the initial population.')
+    group.add_argument('--society-classes', type=int, default=None,
+                       help="How many of the world's classes the society is aware "
+                            'of when the initial population is built. Unset means '
+                            'the whole label space (the original scheme). Setting '
+                            'it smaller -- say 30 of CIFAR-100 -- makes the task '
+                            'space genuinely larger than the society can hold, so '
+                            'the rest has to be DISCOVERED rather than handed over. '
+                            'It constrains generation 0 only. After that the '
+                            "society's space is whatever the population is actually "
+                            'training on: it shrinks when a class is lost and grows '
+                            "when a loner's exploration lands somewhere new. The "
+                            'pool is drawn with the run seed, so different seeds get '
+                            'different worlds.')
     group.add_argument('--classes-per-model', type=int, default=3,
                        help='How many classes each initial individual is trained on.')
     group.add_argument('--pretrain-mode', type=str, default='none',
@@ -576,9 +589,26 @@ def _add_baseline_config(parser):
                             "backbone helps' from 'evolution helps' -- with only the "
                             "scratch variant you cannot tell which produced a gain.")
     group.add_argument('--baseline-mode', type=str, default='scratch',
-                       choices=['scratch', 'finetune'],
-                       help="'scratch' trains one classifier on --baseline-classes; "
-                            "'finetune' extends a checkpoint onto --finetune-classes.")
+                       choices=['scratch', 'finetune', 'curriculum'],
+                       help="'scratch' trains one classifier on --baseline-classes. "
+                            "'finetune' extends a checkpoint onto "
+                            "--finetune-classes. "
+                            "'curriculum' replays a SESiL run's society space "
+                            'through ONE continuously trained model: at each of '
+                            "that run's generations it trains on exactly the "
+                            'classes the society was working on, for exactly the '
+                            'budget that generation cost. The model is never '
+                            're-initialised and its head is never touched -- only '
+                            'the training set changes. That is what isolates the '
+                            'population and the merging from the curriculum, since '
+                            'SESiL then cannot win merely by having explored '
+                            'better. Needs --curriculum-from.')
+    group.add_argument('--curriculum-from', type=str, default=None,
+                       help="CURRICULUM MODE ONLY. The SESiL run directory to "
+                            'replay -- the one holding eval.jsonl and train.jsonl, '
+                            'not the experiment root. Its society records supply '
+                            'both the class sets and the budget marks, so the two '
+                            'curves land on the same x axis by construction.')
     group.add_argument('--baseline-classes', type=str, default=None,
                        help='Comma-separated class ids, or unset for the full dataset.')
     group.add_argument('--finetune-classes', type=str, default=None,
@@ -725,6 +755,13 @@ def validate(args):
             'was still computed every generation and discarded.\n'
             'Use --cert-with count for hybrid, or --mating-mode certificate if '
             'you want accuracy weighting.')
+
+    if args.method == 'baseline' and args.baseline_mode == 'curriculum':
+        if not args.curriculum_from:
+            raise SystemExit(
+                '--baseline-mode curriculum requires --curriculum-from <run dir>, '
+                'pointing at the SESiL run whose society space should be '
+                'replayed.')
 
     warn = []
     if args.pretrain_mode != 'ssl' and args.phase_b_freeze > 0:

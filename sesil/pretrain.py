@@ -183,8 +183,38 @@ def backbone_cost(path):
 # Phase B
 # --------------------------------------------------------------------------- #
 
+def society_pool(args, num_classes):
+    """The classes the INITIAL population may be drawn from.
+
+    The world is `num_classes` wide; the society starts out aware of only
+    --society-classes of them. That gap is the point of the setup: the task
+    space is larger than the society can hold, so the population has to
+    discover the rest through exploration rather than being handed it.
+
+    The pool constrains ONLY how generation 0 is built. After that it has no
+    standing -- the society's space is whatever the population is training on,
+    which shrinks when a class is lost and grows when a loner's exploration
+    lands somewhere new.
+
+    Drawn with the run's seed, so different seeds get different worlds and
+    results are not an artefact of which 30 classes happened to come first.
+    """
+    size = getattr(args, 'society_classes', None)
+    if not size or size >= num_classes:
+        return list(range(num_classes))
+    if size < args.classes_per_model:
+        raise SystemExit(
+            f'--society-classes {size} is smaller than --classes-per-model '
+            f'{args.classes_per_model}: an agent cannot draw more classes than '
+            f'the society knows about.')
+    rng = np.random.default_rng(args.seed)
+    return sorted(int(c) for c in rng.choice(num_classes, size=size, replace=False))
+
+
 def class_subsets(args, num_classes):
     """Which classes each agent is trained on, per --subset-mode.
+
+    Drawn from society_pool(), not from the whole world.
 
     'random' draws each agent's subset independently. That is the original
     scheme, and it leaves overlap to chance: with 8 agents taking 3 of 10
@@ -201,25 +231,27 @@ def class_subsets(args, num_classes):
     """
     rng = np.random.default_rng(args.seed)
     k = args.classes_per_model
+    pool = society_pool(args, num_classes)
+
+    if k > len(pool):
+        raise ValueError(
+            f'--classes-per-model {k} exceeds the {len(pool)}-class society pool')
 
     if getattr(args, 'subset_mode', 'random') == 'random':
         return [sorted(int(c) for c in train_test_split(
-            np.arange(num_classes), train_size=k)[0])
+            np.asarray(pool), train_size=k)[0])
             for _ in range(args.pop_size)]
 
-    if k > num_classes:
-        raise ValueError(f'--classes-per-model {k} exceeds {num_classes} classes')
-
-    subsets, pool = [], []
+    subsets, bag = [], []
     for _ in range(args.pop_size):
         chosen = []
         while len(chosen) < k:
-            if not pool:
-                pool = list(rng.permutation(num_classes))
-            nxt = pool.pop()
+            if not bag:
+                bag = [int(c) for c in rng.permutation(pool)]
+            nxt = bag.pop()
             # Refill rather than repeat: an agent never gets a class twice.
             if nxt in chosen:
-                spare = [c for c in range(num_classes) if c not in chosen]
+                spare = [c for c in pool if c not in chosen]
                 nxt = int(rng.choice(spare))
             chosen.append(int(nxt))
         subsets.append(sorted(chosen))

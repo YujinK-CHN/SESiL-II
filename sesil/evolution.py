@@ -377,6 +377,15 @@ def mutate_and_save(offspring, args, data, next_dir, budget, logger, generation)
 
     trained = []
 
+    # The society's task space: every class the population is actually working
+    # on this generation. Not the union of CERTIFICATES -- an agent with an
+    # empty certificate still trains on its one drawn class, so this is never
+    # empty even when certification collapses entirely. It is also what the
+    # baseline replays, so it has to be what the society really studied, not
+    # what it was licensed to study.
+    society_space = set()
+    society_explored = set()
+
     for index, child in enumerate(offspring):
         classes = training_classes(
             child['certificate'], args.num_classes,
@@ -384,6 +393,8 @@ def mutate_and_save(offspring, args, data, next_dir, budget, logger, generation)
             mode=args.mutation_mode, per_class_accuracy=child.get('per_class'),
         )
         explored = sorted(set(classes) - set(child['certificate']))
+        society_space.update(classes)
+        society_explored.update(explored)
 
         meta = {
             'generation': generation + 1,
@@ -427,6 +438,21 @@ def mutate_and_save(offspring, args, data, next_dir, budget, logger, generation)
 
         save_agent(model, next_dir, index, args.arch, meta)
         trained.append(model)
+
+    certified_space = sorted(society_space - society_explored)
+    logger.log_train({
+        'stage': 'society',
+        'generation': generation,
+        # The budget AFTER this generation's mutation, which is the point on
+        # the x axis at which the society held this space.
+        'budget': round(budget.spent, 4),
+        'space': sorted(society_space),
+        'size': len(society_space),
+        'from_certificates': certified_space,
+        'from_exploration': sorted(society_explored),
+    })
+    print(f'[gen {generation}] society space: {len(society_space)} classes '
+          f'({len(certified_space)} certified, {len(society_explored)} explored)')
 
     return trained
 
