@@ -54,7 +54,8 @@ from sesil.certificate import (
 from sesil.fitness import evaluate_all_classes, summarise
 from sesil.merge import extract_children, merge_couple, point_at
 from sesil.mutation import mutate
-from sesil.population import generation_dir, list_population, save_agent
+from sesil.population import (generation_dir, list_population,
+                              prune_generations, save_agent)
 from sesil.selection import globa_score_matrix, select_mates, strength_matrix
 from sesil.ssl import classifier_name
 
@@ -575,6 +576,13 @@ def run_evolution(args, budget, data, logger, evaluator):
             break
 
         mutate_and_save(offspring, args, data, next_dir, budget, logger, generation)
+
+        # gen_N+1 is now on disk, so everything below the retention window is
+        # dead -- nothing reads a generation once the loop has moved past it.
+        dropped = prune_generations(args, generation + 1, args.keep_generations)
+        if dropped:
+            print(f'[gen {generation}] pruned {len(dropped)} old generation(s) '
+                  f'(--keep-generations {args.keep_generations}); gen_0 kept')
 
         generation += 1
         completed += 1

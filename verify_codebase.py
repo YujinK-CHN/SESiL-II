@@ -68,6 +68,7 @@ EXPERIMENT_DEFAULTS = {
     # 13.6 new classes explored per generation; 15 rounds -> 83% paired and 3.3
     # explored. Set to 15 to stay aligned with the mr15 runs.
     'mating_rounds': 15,
+    'keep_generations': 2,
     'pop_size': 20,
     'classes_per_model': 3,
     'society_classes': 40,
@@ -121,6 +122,7 @@ MUST_REFUSE = [
     (['--method', 'baseline', '--baseline-mode', 'curriculum'], '--curriculum-from'),
     (['--method', 'baseline', '--curriculum-from', 'results/x'],
      'without --baseline-mode curriculum'),
+    (['--keep-generations', '1'], 'smallest retention window'),
 ]
 
 
@@ -357,6 +359,78 @@ def check_curriculum_seed_pairing(report):
            note='an unpaired baseline replays one seed under every seed label')
 
 
+def check_generation_pruning(report):
+    """--keep-generations must never delete a generation the loop still needs.
+
+    Worth a behavioural test rather than a config check: this is the only code
+    in the tree that deletes results, and getting the window off by one would
+    remove gen_N while the loop is reading it -- a failure that shows up hours
+    into a run, as a missing population, not as a wrong number.
+    """
+    import shutil
+    import tempfile
+    import types
+    from sesil.population import prune_generations
+
+    root = tempfile.mkdtemp(prefix='verify_prune_')
+    bad = []
+    try:
+        def fresh(n):
+            ck = os.path.join(root, 'checkpoints')
+            shutil.rmtree(ck, ignore_errors=True)
+            for g in range(n):
+                os.makedirs(os.path.join(ck, f'gen_{g}'))
+            return types.SimpleNamespace(run_dir=root)
+
+        def left():
+            ck = os.path.join(root, 'checkpoints')
+            return sorted(int(d[4:]) for d in os.listdir(ck) if d.startswith('gen_'))
+
+        # Loop has just written gen_10; keep 2 -> gen_9 and gen_10 survive,
+        # gen_0 survives because it is protected.
+        args = fresh(11)
+        prune_generations(args, newest=10, keep=2)
+        if left() != [0, 9, 10]:
+            bad.append(f'keep=2 after gen_10 left {left()}, wanted [0, 9, 10]')
+
+        # The pair the loop holds simultaneously must both survive.
+        args = fresh(11)
+        prune_generations(args, newest=10, keep=2)
+        for needed in (9, 10):
+            if needed not in left():
+                bad.append(f'keep=2 deleted gen_{needed}, which the loop still reads')
+
+        # Wider window.
+        args = fresh(11)
+        prune_generations(args, newest=10, keep=4)
+        if left() != [0, 7, 8, 9, 10]:
+            bad.append(f'keep=4 left {left()}, wanted [0, 7, 8, 9, 10]')
+
+        # 0 means keep everything.
+        args = fresh(11)
+        if prune_generations(args, newest=10, keep=0):
+            bad.append('keep=0 deleted something')
+        if left() != list(range(11)):
+            bad.append(f'keep=0 left {left()}, wanted all 11')
+
+        # Early generations: nothing to prune yet, and gen_0 must survive.
+        args = fresh(2)
+        prune_generations(args, newest=1, keep=2)
+        if left() != [0, 1]:
+            bad.append(f'at gen_1 with keep=2, left {left()}, wanted [0, 1]')
+
+        # Idempotent -- running twice removes nothing more.
+        args = fresh(11)
+        prune_generations(args, newest=10, keep=2)
+        if prune_generations(args, newest=10, keep=2):
+            bad.append('second prune removed more directories')
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+    report('generation pruning keeps what the loop still reads', not bad, bad,
+           note='this is the only code that deletes results')
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -395,6 +469,7 @@ def main():
     check_refusals(report)
     check_second_guard(report)
     check_curriculum_seed_pairing(report)
+    check_generation_pruning(report)
 
     print()
     if failures:

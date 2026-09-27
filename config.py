@@ -315,6 +315,19 @@ def _add_evolution_config(parser):
                        help='Safety cap. The real stopping condition is --budget; '
                             'this only prevents an unbounded loop if the per-generation '
                             'cost is tiny.')
+    group.add_argument('--keep-generations', type=int, default=2,
+                       help='How many of the most recent generation directories to '
+                            'keep on disk. Generation 0 is always kept -- it is the '
+                            'pretrained population, the one thing that cannot be '
+                            'regenerated from a later state. 0 or less keeps every '
+                            'generation, which was the behaviour before this flag. '
+                            'The loop only ever reads gen_N and writes gen_N+1, so 2 '
+                            'is the smallest correct value and nothing downstream '
+                            'notices; at 20 agents a generation is ~360 MB, so '
+                            'keeping all of them costs ~7 GB per seed and ~22 GB per '
+                            'three-seed round. The one thing given up is that '
+                            '--start-gen can only resume from a generation still on '
+                            'disk.')
 
 
 def _add_merging_config(parser):
@@ -769,6 +782,13 @@ def validate(args):
                 '--baseline-mode curriculum requires --curriculum-from <run dir>, '
                 'pointing at the SESiL run whose society space should be '
                 'replayed.')
+    if 0 < args.keep_generations < 2:
+        raise SystemExit(
+            f'--keep-generations {args.keep_generations} cannot work: the '
+            f'evolution loop holds gen_N and gen_N+1 at the same moment, so 2 '
+            f'is the smallest retention window that is correct. Use 2, or 0 '
+            f'to keep every generation.')
+
     if args.curriculum_from and args.baseline_mode != 'curriculum':
         raise SystemExit(
             f'--curriculum-from {args.curriculum_from!r} does nothing without '

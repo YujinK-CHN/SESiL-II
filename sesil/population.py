@@ -109,3 +109,61 @@ def read_meta(population_dir, agent_id):
         return {}
     with open(path) as f:
         return json.load(f)
+
+
+def prune_generations(args, newest, keep, protect=(0,)):
+    """Delete generation directories that nothing will read again.
+
+    The evolution loop only ever touches three generation directories: the one
+    it is reading (`gen_N`), the one it is writing (`gen_N+1`), and the final
+    one at the end. Nothing reads `gen_K` for K below the current generation --
+    verified by there being exactly three generation_dir() call sites. So every
+    older directory is dead weight, and at 20 agents x ~18 MB it is 360 MB per
+    generation, 7 GB per seed, 22 GB per round of three seeds.
+
+    `keep` is how many of the most recent generations to retain, counted back
+    from `newest`. Two is the minimum that can be correct: the loop needs
+    `gen_N` and `gen_N+1` alive at the same moment. `keep <= 0` means keep
+    everything, which is the old behaviour.
+
+    `protect` names generations that are never deleted whatever `keep` says.
+    Generation 0 is protected because it is the pretrained population -- the
+    only thing in the tree that cannot be regenerated from a later state, and
+    the starting point anyone re-running the evolution from scratch needs.
+
+    The cost of pruning is that --start-gen can only resume from a generation
+    still on disk, so in practice only from the most recent one or two.
+
+    Returns the list of directories removed, for logging.
+    """
+    import shutil
+
+    if keep is None or keep <= 0:
+        return []
+
+    root = os.path.join(args.run_dir, 'checkpoints')
+    if not os.path.isdir(root):
+        return []
+
+    # Never delete anything at or above the cutoff, and never a protected one.
+    cutoff = newest - keep + 1
+    protect = set(protect)
+
+    removed = []
+    for name in sorted(os.listdir(root)):
+        if not name.startswith('gen_'):
+            continue
+        try:
+            index = int(name[len('gen_'):])
+        except ValueError:
+            continue                       # not ours to interpret; leave it
+        if index in protect or index >= cutoff:
+            continue
+        path = os.path.join(root, name)
+        try:
+            shutil.rmtree(path)
+            removed.append(path)
+        except OSError:
+            pass                           # a concurrent reader; try again next time
+
+    return removed
