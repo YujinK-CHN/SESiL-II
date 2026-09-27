@@ -392,7 +392,11 @@ def main():
     for pair in args.label:
         if '=' not in pair:
             raise SystemExit(f'--label expects OLD=NEW, got {pair!r}')
-        old, new = pair.split('=', 1)
+        # Split on the LAST '=', not the first. Series names carry the flags
+        # that define an arm, and a flag renders as "mating-rounds=15" -- so
+        # splitting on the first '=' cut that name in half and made every
+        # non-default arm impossible to rename.
+        old, new = pair.rsplit('=', 1)
         old = old.strip()
         if old not in grouped:
             raise SystemExit(
