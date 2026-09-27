@@ -43,7 +43,6 @@ REFERENCE_DEFAULTS = {
     'cert_with': 'count',
     'weight_extra': 1.0,
     'weight_common': 0.1,
-    'mating_rounds': 5,
     'merger': 'permute',
     'merge_head': 'average',
     'stop_node': None,
@@ -60,6 +59,15 @@ REFERENCE_DEFAULTS = {
 # means, and it makes a command line from an earlier session non-reproducible,
 # which is why they are pinned.
 EXPERIMENT_DEFAULTS = {
+    # Moved here from REFERENCE_DEFAULTS once round 1 showed what it is: not a
+    # method-defining mode but a tuned knob, and the most sensitive one in the
+    # setup. It sets how many agents pair, which sets how many are left over as
+    # loners, and loners are the only source of exploration -- so it sets the
+    # size of the society space, which is what the whole-space curve tracks.
+    # Measured on 3 seeds x 38 generations: 5 rounds -> 27% of agents paired and
+    # 13.6 new classes explored per generation; 15 rounds -> 83% paired and 3.3
+    # explored. Set to 15 to stay aligned with the mr15 runs.
+    'mating_rounds': 15,
     'pop_size': 20,
     'classes_per_model': 3,
     'society_classes': 40,

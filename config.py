@@ -481,7 +481,7 @@ def _add_selection_config(parser):
                             'still decides on the certificate alone. Raise it to '
                             'hand more of the decision to GLOBA, lower it to keep '
                             'the certificate in charge.')
-    group.add_argument('--mating-rounds', type=int, default=5,
+    group.add_argument('--mating-rounds', type=int, default=15,
                        help='How many rounds of mate choice to run. Each round: '
                             'everyone still unpaired picks a partner from those '
                             'still unpaired, reciprocated picks become couples, and '
