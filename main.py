@@ -87,8 +87,28 @@ def main(argv=None):
                                and args.merger == 'globa' else None),
               'subset_mode': args.subset_mode if args.method == 'sesil' else None,
               'mating_rounds': args.mating_rounds if args.method == 'sesil' else None,
+              # Numeric, but every bit as arm-defining as the modes above, and
+              # they were missing: two rounds differing only in
+              # --individual-budget carried identical meta, so plot_results
+              # grouped them into ONE series and averaged six runs of two
+              # different conditions into a single curve. The only visible sign
+              # was a budget-grid note.
+              'individual_budget': (args.individual_budget
+                                    if args.method == 'sesil' else None),
+              'certify_top_frac': (args.certify_top_frac
+                                   if args.method == 'sesil' else None),
               'baseline_init': (args.baseline_init
-                                if args.method == 'baseline' else None)},
+                                if args.method == 'baseline' else None),
+              # A curriculum baseline is defined by the run it replays -- two
+              # baselines from different rounds are different conditions even
+              # though every other field matches. Grouping needs this; the
+              # legend does not, so plot_results uses it as a key only.
+              'baseline_mode': (args.baseline_mode
+                                if args.method == 'baseline' else None),
+              'curriculum_from': (args.curriculum_from
+                                  if args.method == 'baseline'
+                                  and args.baseline_mode == 'curriculum'
+                                  else None)},
     )
 
     _print_banner(args, data, budget)

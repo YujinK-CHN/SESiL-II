@@ -431,6 +431,56 @@ def check_generation_pruning(report):
            note='this is the only code that deletes results')
 
 
+def check_series_fields_are_logged(report):
+    """Every field plot_results groups by must actually be written to eval.jsonl.
+
+    This is the quietest failure mode in the project. plot_results separates
+    arms using the meta fields carried on each eval record; a field it consults
+    but main.py never logs reads back as None for every run, so two different
+    conditions get the same series name, their seeds are pooled, and six runs
+    of two conditions are averaged into one curve. Nothing errors. The only
+    hint is a note about differing budget grids.
+
+    It happened: --individual-budget and --certify-top-frac defined arms and
+    were not logged, so the ib050 and ib100 rounds were indistinguishable in a
+    combined plot.
+    """
+    import ast
+
+    bad = []
+    try:
+        import plot_results
+        wanted = set(plot_results.SESIL_REFERENCE)
+    except Exception as e:                               # noqa: BLE001
+        report('series-defining fields are all logged', False,
+               [f'could not import plot_results: {e}'])
+        return
+
+    # Read main.py's meta dict literally rather than running it: constructing an
+    # Evaluator needs a dataset and a device.
+    with open('main.py', encoding='utf-8') as f:
+        tree = ast.parse(f.read())
+
+    logged = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.keyword) and node.arg == 'meta':
+            if isinstance(node.value, ast.Dict):
+                for k in node.value.keys:
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                        logged.add(k.value)
+
+    if not logged:
+        bad.append('could not find the meta={...} dict in main.py')
+    else:
+        for field in sorted(wanted - logged):
+            bad.append(f'plot_results groups by {field!r} but main.py never '
+                       f'logs it -- arms differing only in it would be merged')
+
+    report('series-defining fields are all logged', not bad, bad,
+           note='a field consulted but not logged silently averages '
+                'different conditions together')
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -470,6 +520,7 @@ def main():
     check_second_guard(report)
     check_curriculum_seed_pairing(report)
     check_generation_pruning(report)
+    check_series_fields_are_logged(report)
 
     print()
     if failures:

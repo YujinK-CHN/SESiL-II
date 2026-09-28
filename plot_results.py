@@ -89,8 +89,24 @@ SESIL_REFERENCE = {
     'merge_head': 'average',
     'globa_preset': None,
     'subset_mode': 'random',
-    'mating_rounds': 5,
+    'mating_rounds': 15,
+    'individual_budget': 0.5,
+    'certify_top_frac': 0.3,
 }
+
+
+def _experiment_of(path):
+    """The experiment name inside a run path, for telling arms apart.
+
+    .../results/<experiment>/<dataset>/<leaf>/seed<N> -> <experiment>. Falls
+    back to the whole path if it does not look like that, since an unusable
+    key is better than a key that silently equals another one.
+    """
+    parts = str(path).replace(os.sep, '/').replace('\\', '/').strip('/').split('/')
+    for i, part in enumerate(parts):
+        if part.startswith('cifar') and i:
+            return parts[i - 1]
+    return str(path)
 
 
 def load_run(run_dir):
@@ -118,16 +134,33 @@ def load_run(run_dir):
         parts = [p for p in (merger, pretrain) if p]
         for field, default in SESIL_REFERENCE.items():
             value = head.get(field)
-            if value is not None and value != default:
-                parts.append(f'{field.replace("_", "-")}={value}')
+            if value is None or value == default:
+                continue
+            if isinstance(value, float):
+                value = f'{value:g}'
+            parts.append(f'{field.replace("_", "-")}={value}')
         series = f'{method} ({", ".join(parts)})' if parts else method
     else:
         # The baseline's variants differ by where they start, not how they merge.
         init = head.get('baseline_init')
         series = f'{method} ({init})' if init and init != 'scratch' else method
 
+    # The key decides which runs are averaged together; the label is only what
+    # the legend says. They are usually the same string, but a curriculum
+    # baseline needs a finer key than its label: two rounds' baselines are
+    # different conditions, and merging them averages six runs of two
+    # conditions into one curve. Disambiguation of labels happens in
+    # group_runs, and only when two keys actually collide, so the common
+    # single-round plot keeps a clean legend.
+    key = series
+    source = head.get('curriculum_from')
+    if method != 'sesil' and source:
+        key = f'{series} || {_experiment_of(source)}'
+
     return {
         'dir': run_dir,
+        'key': key,
+        'source': _experiment_of(source) if source else None,
         'series': series,
         'seed': head.get('seed'),
         'phase_start': float(head.get('phase_start', 0.0) or 0.0),
@@ -136,10 +169,28 @@ def load_run(run_dir):
 
 
 def group_runs(runs):
-    """series name -> list of runs (one per seed)."""
-    grouped = defaultdict(list)
+    """display label -> list of runs (one per seed).
+
+    Runs are grouped by their KEY, then labelled. A label is only expanded
+    when two different keys would otherwise share it -- so one round plots as
+    plain 'baseline', while two rounds plotted together become
+    'baseline (from <experiment>)' and stay separate curves.
+    """
+    by_key = defaultdict(list)
     for run in runs:
-        grouped[run['series']].append(run)
+        by_key[run.get('key') or run['series']].append(run)
+
+    labels = defaultdict(list)
+    for key, members in by_key.items():
+        labels[members[0]['series']].append(key)
+
+    grouped = {}
+    for key, members in by_key.items():
+        label = members[0]['series']
+        if len(labels[label]) > 1:
+            source = members[0].get('source')
+            label = f'{label} (from {source})' if source else f'{label} [{key}]'
+        grouped[label] = members
     return dict(sorted(grouped.items()))
 
 
@@ -350,9 +401,12 @@ def main():
                         '--label "sesil (permute)=SESiL (permutation)". Repeatable. '
                         'Run without it once to see the series names as detected.')
     p.add_argument('--order', default=None,
-                   help='comma-separated series names (original, pre-rename) fixing '
-                        'draw and colour order. Series not listed are dropped, which '
-                        'is also how you plot a subset.')
+                   help='series names (original, pre-rename) fixing draw and '
+                        'colour order. Series not listed are dropped, which is '
+                        'also how you plot a subset. Separate with SEMICOLONS -- '
+                        'series names contain commas, so a comma-separated list '
+                        'cannot express them; comma still works for names that '
+                        'have none.')
     p.add_argument('--table', action='store_true',
                    help='also print the numbers behind every point')
     p.add_argument('--list-metrics', action='store_true',
@@ -380,7 +434,11 @@ def main():
     grouped = group_runs(runs)
 
     if args.order:
-        wanted = [n.strip() for n in args.order.split(',') if n.strip()]
+        # Series names contain commas -- "sesil (permute, none, ...)" -- so a
+        # comma-separated list cannot express them. Semicolon wins when one is
+        # present; comma still works for the simple names that have none.
+        sep = ';' if ';' in args.order else ','
+        wanted = [n.strip() for n in args.order.split(sep) if n.strip()]
         missing = [n for n in wanted if n not in grouped]
         if missing:
             raise SystemExit(
@@ -392,15 +450,23 @@ def main():
     for pair in args.label:
         if '=' not in pair:
             raise SystemExit(f'--label expects OLD=NEW, got {pair!r}')
-        # Split on the LAST '=', not the first. Series names carry the flags
-        # that define an arm, and a flag renders as "mating-rounds=15" -- so
-        # splitting on the first '=' cut that name in half and made every
-        # non-default arm impossible to rename.
-        old, new = pair.rsplit('=', 1)
-        old = old.strip()
-        if old not in grouped:
+        # Neither the first '=' nor the last one is right. Series names embed
+        # flags ("mating-rounds=15"), so splitting on the first cuts the name
+        # in half; replacement labels often carry '=' too ("mr=15, ib=1.00"),
+        # so splitting on the last eats part of the name instead. Split at
+        # whichever '=' leaves a name that actually exists, preferring the
+        # longest such name so a series whose name is a prefix of another
+        # cannot steal the match.
+        old = new = None
+        for cut in sorted((i for i, c in enumerate(pair) if c == '='),
+                          reverse=True):
+            candidate = pair[:cut].strip()
+            if candidate in grouped:
+                old, new = candidate, pair[cut + 1:]
+                break
+        if old is None:
             raise SystemExit(
-                f'--label refers to {old!r}, which is not a series here.\n'
+                f'--label {pair!r} does not start with any series here.\n'
                 f'detected: {sorted(grouped)}')
         renames[old] = new.strip()
 
