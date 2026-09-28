@@ -287,7 +287,8 @@ def print_table(series_data, metric, band):
 
 
 def render(series_data, phase_starts, metric, band, out_path, mode, title,
-           ylabel=None, xlabel='Training budget  (epoch-equivalents)'):
+           ylabel=None, xlabel='Training budget  (epoch-equivalents)',
+           legend_loc='lower right'):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -352,8 +353,11 @@ def render(series_data, phase_starts, metric, band, out_path, mode, title,
         ax.spines[side].set_color(t['grid'])
     ax.tick_params(colors=t['muted'], labelsize=9, length=0)
 
-    ax.legend(frameon=False, loc='lower right', fontsize=9,
-              labelcolor=t['ink_2'], handlelength=1.6)
+    # 'none' drops the box and leaves the direct end-of-line labels to do the
+    # identifying, which is enough when the curves are separated.
+    if legend_loc != 'none':
+        ax.legend(frameon=False, loc=legend_loc, fontsize=9,
+                  labelcolor=t['ink_2'], handlelength=1.6)
 
     fig.tight_layout()
     fig.savefig(out_path, facecolor=t['surface'])
@@ -407,6 +411,15 @@ def main():
                         'series names contain commas, so a comma-separated list '
                         'cannot express them; comma still works for names that '
                         'have none.')
+    p.add_argument('--legend-loc', default='lower right',
+                   choices=['lower right', 'upper right', 'lower left',
+                            'upper left', 'center right', 'center left',
+                            'best', 'none'],
+                   help="Where the legend sits. Default 'lower right', which "
+                        'suits a curve that rises from the bottom left; a '
+                        'sweep whose curves all end high needs it out of the '
+                        "way, usually upper right. 'none' drops the box "
+                        'entirely and relies on the direct end-of-line labels.')
     p.add_argument('--table', action='store_true',
                    help='also print the numbers behind every point')
     p.add_argument('--list-metrics', action='store_true',
@@ -507,7 +520,8 @@ def main():
     # the budget axis; on the FLOPs axis its position would be wrong.
     phase = [] if args.x_axis == 'total-flops' else [r['phase_start'] for r in runs]
     render(series_data, phase,
-           args.metric, args.band, out, args.mode, title, args.ylabel, xlabel)
+           args.metric, args.band, out, args.mode, title, args.ylabel, xlabel,
+           args.legend_loc)
 
 
 if __name__ == '__main__':
