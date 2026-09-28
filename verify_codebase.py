@@ -379,12 +379,39 @@ def check_generation_pruning(report):
             ck = os.path.join(root, 'checkpoints')
             shutil.rmtree(ck, ignore_errors=True)
             for g in range(n):
-                os.makedirs(os.path.join(ck, f'gen_{g}'))
+                for a in range(2):
+                    d = os.path.join(ck, f'gen_{g}', f'agent_{a:03}')
+                    os.makedirs(d)
+                    open(os.path.join(d, 'resnet_v0.pth.tar'), 'w').close()
+                    open(os.path.join(d, 'agent.json'), 'w').close()
             return types.SimpleNamespace(run_dir=root)
 
         def left():
+            """Generations whose WEIGHTS survive -- what the loop can load."""
             ck = os.path.join(root, 'checkpoints')
-            return sorted(int(d[4:]) for d in os.listdir(ck) if d.startswith('gen_'))
+            out = []
+            for d in os.listdir(ck):
+                if not d.startswith('gen_'):
+                    continue
+                for a in os.listdir(os.path.join(ck, d)):
+                    if any(f.endswith('.pth.tar')
+                           for f in os.listdir(os.path.join(ck, d, a))):
+                        out.append(int(d[4:]))
+                        break
+            return sorted(out)
+
+        def meta_kept():
+            """Generations whose agent.json survives -- provenance, kept always."""
+            ck = os.path.join(root, 'checkpoints')
+            out = []
+            for d in os.listdir(ck):
+                if not d.startswith('gen_'):
+                    continue
+                for a in os.listdir(os.path.join(ck, d)):
+                    if 'agent.json' in os.listdir(os.path.join(ck, d, a)):
+                        out.append(int(d[4:]))
+                        break
+            return sorted(out)
 
         # Loop has just written gen_10; keep 2 -> gen_9 and gen_10 survive,
         # gen_0 survives because it is protected.
@@ -424,6 +451,16 @@ def check_generation_pruning(report):
         prune_generations(args, newest=10, keep=2)
         if prune_generations(args, newest=10, keep=2):
             bad.append('second prune removed more directories')
+
+        # Provenance survives pruning. agent.json is 454 bytes against 18 MB of
+        # weights, and it is the only record tying an agent's parents to its own
+        # id -- train.jsonl logs a couple's parents but not which agent_NNN the
+        # child became.
+        args = fresh(11)
+        prune_generations(args, newest=10, keep=2)
+        if meta_kept() != list(range(11)):
+            bad.append(f'pruning discarded agent.json: kept {meta_kept()}, '
+                       f'wanted all 11 generations')
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

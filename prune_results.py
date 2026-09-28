@@ -11,17 +11,19 @@ generation and gen_0 is dead weight -- and at 20 agents a generation is ~360 MB.
 The retention rule is deliberately the same one sesil.population.prune_generations
 applies during a run, so a pruned old run and a fresh one look alike:
 
-    keep the `keep` most recent generations, and always keep gen_0
+    keep the `keep` most recent generations, and always keep gen_0,
+    and in every pruned generation delete only the WEIGHTS
 
 gen_0 is kept because it is the pretrained population -- the only thing in the
-tree that cannot be regenerated from a later state.
+tree that cannot be regenerated from a later state. agent.json is kept because
+it is 454 bytes against 18 MB of weights and it is the only record tying an
+agent's parents to its own id.
 
 Probe runs have a single gen_0 and are therefore untouched by construction.
 """
 
 import argparse
 import os
-import shutil
 
 
 def generations(checkpoints):
@@ -33,6 +35,28 @@ def generations(checkpoints):
             except ValueError:
                 pass                       # not ours to interpret; leave it
     return sorted(out)
+
+
+AGENT_META = 'agent.json'
+
+
+def strip_weights(path):
+    """Delete an agent directory's weights, keeping its metadata."""
+    freed = 0
+    for agent in sorted(os.listdir(path)):
+        agent_dir = os.path.join(path, agent)
+        if not os.path.isdir(agent_dir):
+            continue
+        for entry in sorted(os.listdir(agent_dir)):
+            if entry == AGENT_META:
+                continue
+            target = os.path.join(agent_dir, entry)
+            try:
+                freed += os.path.getsize(target)
+                os.remove(target)
+            except OSError:
+                pass
+    return freed
 
 
 def dir_bytes(path):
@@ -88,8 +112,8 @@ def main():
         print('Dry run -- nothing removed. Re-run with --delete to remove them.')
         return 0
     for path in doomed:
-        shutil.rmtree(path, ignore_errors=True)
-    print(f'Removed {len(doomed)} director(ies).')
+        strip_weights(path)
+    print(f'Stripped weights from {len(doomed)} generation(s); agent.json kept.')
     return 0
 
 

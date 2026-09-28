@@ -131,12 +131,23 @@ def prune_generations(args, newest, keep, protect=(0,)):
     only thing in the tree that cannot be regenerated from a later state, and
     the starting point anyone re-running the evolution from scratch needs.
 
-    The cost of pruning is that --start-gen can only resume from a generation
-    still on disk, so in practice only from the most recent one or two.
+    ONLY THE WEIGHTS GO. agent.json stays. The weights are ~18 MB each and the
+    metadata is 454 bytes, so keeping it costs 20 kB per generation against 360
+    MB recovered -- and it is the only place an agent's parents are recorded
+    against its own id. train.jsonl logs a couple's parents but not which
+    agent_NNN the child became; that mapping can be inferred from the order
+    breed() appends children, but an inference that depends on append order is
+    not the same as a record, and it silently becomes wrong if that order ever
+    changes.
 
-    Returns the list of directories removed, for logging.
+    The cost of pruning is that --start-gen can only resume from a generation
+    whose weights are still on disk, so in practice only from the most recent
+    one or two. A pruned generation keeps its directory and its metadata, so it
+    still lists as a population -- resuming from one would fail on the missing
+    weights rather than look empty.
+
+    Returns the list of generation directories pruned, for logging.
     """
-    import shutil
 
     if keep is None or keep <= 0:
         return []
@@ -160,10 +171,21 @@ def prune_generations(args, newest, keep, protect=(0,)):
         if index in protect or index >= cutoff:
             continue
         path = os.path.join(root, name)
-        try:
-            shutil.rmtree(path)
+
+        freed = False
+        for agent in sorted(os.listdir(path)):
+            agent_dir = os.path.join(path, agent)
+            if not os.path.isdir(agent_dir):
+                continue
+            for entry in sorted(os.listdir(agent_dir)):
+                if entry == AGENT_META:
+                    continue               # provenance; costs 454 bytes
+                try:
+                    os.remove(os.path.join(agent_dir, entry))
+                    freed = True
+                except OSError:
+                    pass                   # a concurrent reader; retry next time
+        if freed:
             removed.append(path)
-        except OSError:
-            pass                           # a concurrent reader; try again next time
 
     return removed
