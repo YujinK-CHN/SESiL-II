@@ -136,6 +136,99 @@ def globa_score_matrix(agent_ids, states, core, args):
     return scores
 
 
+class LazyGlobaScores:
+    """globa_score_matrix's result, computed one pair at a time on demand.
+
+    Reads like the dict that function returns -- scores[a][b] -- but decomposes
+    a pair only when something actually asks for it, and remembers the answer.
+    One decomposition yields both directions, so asking for scores[a][b] fills
+    scores[b][a] too.
+
+    This exists for --mating-mode hybrid, where GLOBA only settles ties among
+    candidates within --hybrid-tolerance of the best certificate score. Measured
+    over 39 generations at pop-size 20: the tie-break asks about a median of 25
+    pairs, while the eager matrix computes all 190. The other 165 decompositions
+    were built and discarded, at seconds each -- hours per run spent on numbers
+    nothing read.
+
+    NOT used by --mating-mode globa, where the GLOBA score IS the primary
+    score and every pair genuinely has to be ranked. There, eager is both
+    correct and no slower.
+
+    Selection is unchanged: the same pairs get the same scores, and a score
+    nobody reads cannot change a decision.
+    """
+
+    def __init__(self, agent_ids, states, core, args):
+        self._ids = list(agent_ids)
+        self._states = states
+        self._core = core
+        self._args = args
+        self._cache = {a: {} for a in self._ids}
+        self.computed = 0                    # pairs actually decomposed
+
+    def __getitem__(self, agent):
+        return _LazyRow(self, agent)
+
+    def __contains__(self, agent):
+        return agent in self._cache
+
+    def __iter__(self):
+        return iter(self._ids)
+
+    def keys(self):
+        return list(self._ids)
+
+    def score(self, a, b):
+        row = self._cache.get(a)
+        if row is None or a == b:
+            return 0.0
+        if b in row:
+            return row[b]
+
+        from sesil.globa_stats import directional_pair_stats
+        a_sees_b, b_sees_a = directional_pair_stats(
+            self._states[a], self._states[b], self._core,
+            eta=self._args.probe_eta,
+            svd_energy=self._args.probe_svd_energy,
+            basis_energy=self._args.probe_basis_energy,
+            head_prefix=self._args.head_prefix,
+            weighting=self._args.probe_layer_weighting,
+        )
+        # One decomposition, both directions -- so fill them both.
+        self._cache[a][b] = _globa_value(a_sees_b, self._args.globa_with)
+        self._cache[b][a] = _globa_value(b_sees_a, self._args.globa_with)
+        self.computed += 1
+        return self._cache[a][b]
+
+
+class _LazyRow:
+    """One agent's row. Only the lookups that happen are ever computed."""
+
+    def __init__(self, parent, agent):
+        self._parent = parent
+        self._agent = agent
+
+    def get(self, other, default=0.0):
+        if other not in self._parent:
+            return default
+        return self._parent.score(self._agent, other)
+
+    def __getitem__(self, other):
+        return self._parent.score(self._agent, other)
+
+    def items(self):
+        for other in self._parent:
+            if other != self._agent:
+                yield other, self._parent.score(self._agent, other)
+
+    def keys(self):
+        return [o for o in self._parent if o != self._agent]
+
+    def __iter__(self):
+        return iter(self.keys())
+
+
 # D_plus is redundancy -- the donor moved structure the base already moved, the
 # same way. Wanting LESS of it is the sensible direction, so it is reported as
 # the share that is NOT redundant. Subtracting rather than negating keeps every
@@ -310,10 +403,15 @@ def select_mates(population_info, args, scores=None, tiebreak=None):
         for m in pool:
             options = {k: v for k, v in scores[m].items() if k not in paired}
             if hybrid:
+                # The row is passed WHOLE, not filtered into a dict. Filtering
+                # would read every entry, and with a lazy GLOBA scorer reading
+                # an entry means decomposing that pair -- which is exactly the
+                # work being avoided. Filtering is unnecessary anyway: the tied
+                # set is drawn from `options`, which already excludes paired
+                # agents, so the secondary score is only ever asked about
+                # candidates still in the pool.
                 choices[m] = lexicographic_choice(
-                    options, {k: v for k, v in tiebreak[m].items()
-                              if k not in paired},
-                    tolerance=args.hybrid_tolerance)
+                    options, tiebreak[m], tolerance=args.hybrid_tolerance)
             elif deterministic:
                 choices[m] = best_choice(options)
             else:

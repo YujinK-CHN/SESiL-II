@@ -56,7 +56,8 @@ from sesil.merge import extract_children, merge_couple, point_at
 from sesil.mutation import mutate
 from sesil.population import (generation_dir, list_population,
                               prune_generations, save_agent)
-from sesil.selection import globa_score_matrix, select_mates, strength_matrix
+from sesil.selection import (LazyGlobaScores, globa_score_matrix, select_mates,
+                             strength_matrix)
 from sesil.ssl import classifier_name
 
 
@@ -462,6 +463,37 @@ def mutate_and_save(offspring, args, data, next_dir, budget, logger, generation)
 # Driver
 # --------------------------------------------------------------------------- #
 
+def mating_needs_globa(args):
+    """Whether mate CHOICE consults the GLOBA decomposition.
+
+    Deliberately not "is a backbone loaded". The backbone is loaded whenever
+    mating OR MERGING needs it, and conflating the two was a real bug: with
+    --merger globa and --mating-mode certificate, the pair-score matrix was
+    built because merging had pulled the backbone in, and then handed to
+    select_mates as `scores`. select_mates only builds the certificate matrix
+    when `scores is None`, so the certificate score never ran and the
+    population mated on GLOBA D_minus while its config said 'certificate'.
+    Measured on the affected run: 6% of couples were top-tier by certificate,
+    where certificate mating gives ~100%.
+    """
+    return args.mating_mode in ('globa', 'hybrid')
+
+
+def mating_inputs(args, pair_scores):
+    """(scores, tiebreak) for select_mates, given the GLOBA matrix or None.
+
+    Only 'globa' uses the GLOBA matrix AS the score. 'hybrid' passes it
+    separately as a tie-break and lets selection build the certificate matrix
+    itself. 'certificate' and 'random' must receive None, so selection builds
+    their own -- passing anything else silently replaces the scoring rule.
+    """
+    if args.mating_mode == 'hybrid':
+        return None, pair_scores
+    if args.mating_mode == 'globa':
+        return pair_scores, None
+    return None, None
+
+
 def _load_globa_core(args):
     """The phase-A backbone GLOBA measures task vectors against.
 
@@ -530,36 +562,58 @@ def run_evolution(args, budget, data, logger, evaluator):
             # GLOBA scoring needs the agents' weights and the shared
             # backbone, neither of which selection can reach on its own.
             pair_scores = None
-            if globa_core is not None:
+            if globa_core is not None and mating_needs_globa(args):
                 head_prefix = classifier_name(models[0]) + '.'
                 args.head_prefix = head_prefix
                 states = {info['Model Name']:
                           {k: v.detach().cpu() for k, v in m.state_dict().items()}
                           for info, m in zip(population_info, models)}
+                ids = [info['Model Name'] for info in population_info]
                 t0 = time.time()
-                pair_scores = globa_score_matrix(
-                    [info['Model Name'] for info in population_info],
-                    states, globa_core, args)
-                print(f'[gen {generation}] globa pair scoring '
-                      f'({args.globa_with}) took {time.time() - t0:.1f}s')
+                if args.mating_mode == 'hybrid':
+                    # Hybrid consults GLOBA only to settle ties, which touches
+                    # ~25 of 190 pairs per generation at pop-size 20. Scoring
+                    # them all up front cost hours per run for numbers nothing
+                    # read, so the scorer decomposes a pair when asked.
+                    pair_scores = LazyGlobaScores(ids, states, globa_core, args)
+                else:
+                    # --mating-mode globa ranks EVERY candidate by this score,
+                    # so every pair is genuinely needed and eager is no slower.
+                    pair_scores = globa_score_matrix(ids, states, globa_core, args)
+                    print(f'[gen {generation}] globa pair scoring '
+                          f'({args.globa_with}) took {time.time() - t0:.1f}s')
+                # NOTE: `states` is captured by the lazy scorer, so it must not
+                # be freed here in hybrid mode -- it is still needed.
+                if args.mating_mode != 'hybrid':
+                    del states
+
+            # Which of the two slots the GLOBA matrix fills, if either. See
+            # mating_inputs: certificate and random must get None in BOTH, or
+            # selection silently uses whatever it was handed instead of the
+            # scoring rule the run asked for.
+            scores, tiebreak = mating_inputs(args, pair_scores)
+            pairs, loners = select_mates(population_info, args,
+                                         scores=scores, tiebreak=tiebreak)
+            print(f'[gen {generation}] {len(pairs)} couples, {len(loners)} loners')
+
+            # How much GLOBA work the tie-break actually needed. Logged because
+            # it is the number that says whether hybrid is doing anything: a
+            # generation that scored 0 pairs settled every choice on the
+            # certificate alone, which is plain --mating-mode certificate.
+            scored = getattr(pair_scores, 'computed', None)
+            if scored is not None:
+                n = len(population_info)
+                print(f'[gen {generation}] globa tie-break scored {scored} of '
+                      f'{n * (n - 1) // 2} pairs in {time.time() - t0:.1f}s')
                 del states
 
-            # In hybrid mode the GLOBA matrix settles ties in the certificate
-            # score rather than being the score itself, so it is passed
-            # separately and selection builds the certificate matrix as usual.
-            if args.mating_mode == 'hybrid':
-                pairs, loners = select_mates(population_info, args,
-                                             tiebreak=pair_scores)
-            else:
-                pairs, loners = select_mates(population_info, args,
-                                             scores=pair_scores)
-            print(f'[gen {generation}] {len(pairs)} couples, {len(loners)} loners')
             logger.log_train({
                 'stage': 'mating',
                 'generation': generation,
                 'budget': round(budget.spent, 4),
                 'couples': [list(p) for p in pairs],
                 'loners': loners,
+                'globa_pairs_scored': scored,
             })
 
             offspring = breed(pairs, loners, population_info, models, raw_config,

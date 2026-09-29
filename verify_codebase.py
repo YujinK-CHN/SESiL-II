@@ -518,6 +518,132 @@ def check_series_fields_are_logged(report):
                 'different conditions together')
 
 
+def check_lazy_globa_matches_eager(report):
+    """Lazy GLOBA scoring must choose exactly what eager scoring chooses.
+
+    Hybrid mating consults GLOBA only to break ties, so scoring all 190 pairs
+    of a 20-agent population up front spent hours per run on numbers nothing
+    read. The scorer now decomposes a pair when asked. That is only safe if it
+    is invisible: same couples, same loners. A score nobody reads cannot change
+    a decision -- but an indexing bug in the lazy row would change plenty, and
+    would show up as a quietly different population rather than an error.
+
+    Uses a stub decomposition so the check needs no backbone and no GPU: what
+    is under test is the plumbing, not the linear algebra.
+    """
+    import types
+    from sesil import selection
+
+    bad = []
+    ids = [f'agent_{i:03}' for i in range(8)]
+
+    # Deterministic stand-in for directional_pair_stats, keyed by the pair, so
+    # eager and lazy must see identical numbers.
+    def fake_stats(sa, sb, core, **kw):
+        h = (hash(sa) ^ (hash(sb) * 31)) % 1000 / 1000.0
+        return ({'D_minus': h}, {'D_minus': 1.0 - h})
+
+    import sesil.globa_stats as gs
+    real = gs.directional_pair_stats
+    gs.directional_pair_stats = fake_stats
+    try:
+        args = types.SimpleNamespace(
+            probe_eta=0.8, probe_svd_energy=0.9, probe_basis_energy=0.999,
+            head_prefix='fc.', probe_layer_weighting='none',
+            globa_with='D_minus', mating_mode='hybrid', cert_with='count',
+            weight_extra=1.0, weight_common=0.1, mating_rounds=5,
+            hybrid_tolerance=0.15)
+        states = {a: a for a in ids}
+
+        eager = selection.globa_score_matrix(ids, states, None, args)
+        lazy = selection.LazyGlobaScores(ids, states, None, args)
+
+        # Every entry must agree, whichever way it is reached.
+        for a in ids:
+            for b in ids:
+                if a == b:
+                    continue
+                if abs(eager[a][b] - lazy[a].get(b)) > 1e-12:
+                    bad.append(f'lazy[{a}][{b}] != eager: '
+                               f'{lazy[a].get(b)!r} vs {eager[a][b]!r}')
+                    break
+
+        # And the decision they drive must be identical.
+        pop = [{'Model Name': a, 'Certificate': {i, (i + 1) % 10, (i + 2) % 10},
+                'Strength': [1.0] * 10} for i, a in enumerate(ids)]
+        import random
+        for trial in range(5):
+            random.seed(trial)
+            pe, le_ = selection.select_mates(pop, args, tiebreak=eager)
+            random.seed(trial)
+            pl, ll = selection.select_mates(pop, args,
+                                            tiebreak=selection.LazyGlobaScores(
+                                                ids, states, None, args))
+            if pe != pl or le_ != ll:
+                bad.append(f'trial {trial}: eager chose {pe}/{le_}, '
+                           f'lazy chose {pl}/{ll}')
+
+        # And it must actually be lazy -- otherwise the fix does nothing.
+        counter = selection.LazyGlobaScores(ids, states, None, args)
+        selection.select_mates(pop, args, tiebreak=counter)
+        total = len(ids) * (len(ids) - 1) // 2
+        if counter.computed >= total:
+            bad.append(f'lazy scorer computed {counter.computed} of {total} '
+                       f'pairs -- no work was saved')
+    finally:
+        gs.directional_pair_stats = real
+
+    report('lazy GLOBA scoring picks what eager scoring picks', not bad, bad,
+           note='hybrid must be unchanged by the speedup')
+
+
+def check_mating_inputs(report):
+    """Only 'globa' may have the GLOBA matrix as its mating SCORE.
+
+    This is a regression test for a bug that silently changed what an arm was.
+    The phase-A backbone is loaded when mating OR merging needs it, so
+    --merger globa --mating-mode certificate loaded it for merging, built the
+    pair-score matrix, and passed it to select_mates as `scores`. select_mates
+    builds the certificate matrix only when `scores is None`, so certificate
+    scoring never ran: the population mated on GLOBA D_minus while every log
+    and config recorded 'certificate'. Measured on the affected run, 6% of
+    couples were top-tier by certificate against ~100% for real certificate
+    mating.
+
+    Nothing about that failure was visible without recomputing the scores, so
+    it is pinned here rather than left to inspection.
+    """
+    import types
+    from sesil.evolution import mating_inputs, mating_needs_globa
+
+    bad = []
+    matrix = {'sentinel': True}
+
+    expected = {
+        # mode          -> (scores, tiebreak), None meaning "build your own"
+        'certificate': (None, None),
+        'random':      (None, None),
+        'globa':       (matrix, None),
+        'hybrid':      (None, matrix),
+    }
+    for mode, want in expected.items():
+        got = mating_inputs(types.SimpleNamespace(mating_mode=mode), matrix)
+        if got != want:
+            bad.append(f'{mode}: got {got!r}, wanted {want!r}')
+
+    # And the matrix must not even be BUILT for the modes that cannot use it,
+    # which is what made the affected run slow as well as wrong.
+    for mode, want in (('certificate', False), ('random', False),
+                       ('globa', True), ('hybrid', True)):
+        got = mating_needs_globa(types.SimpleNamespace(mating_mode=mode))
+        if got != want:
+            bad.append(f'mating_needs_globa({mode}) = {got}, wanted {want}')
+
+    report('only globa/hybrid consume the GLOBA pair matrix', not bad, bad,
+           note='a matrix handed to the wrong slot replaces the scoring rule '
+                'without any error')
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -558,6 +684,8 @@ def main():
     check_curriculum_seed_pairing(report)
     check_generation_pruning(report)
     check_series_fields_are_logged(report)
+    check_lazy_globa_matches_eager(report)
+    check_mating_inputs(report)
 
     print()
     if failures:
