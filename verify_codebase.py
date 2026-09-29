@@ -702,6 +702,50 @@ def check_val_routed_metric(report):
            note='selecting on test is leakage and looks fine in a plot')
 
 
+def check_val_routed_is_wired(report):
+    """The routed metric must actually reach the evaluator on every eval.
+
+    check_val_routed_metric proves the arithmetic. This proves the plumbing,
+    which is the part a find-and-replace can silently fail to land: if
+    evolution stops passing the validation matrix, _reduce quietly omits the
+    routed fields and every run from then on produces a log that plots as an
+    empty series. Nothing errors, and the gap is only noticed when someone
+    tries to draw the figure.
+    """
+    import ast
+    import inspect
+    from sesil.evaluator import Evaluator
+
+    bad = []
+
+    sig = inspect.signature(Evaluator.record)
+    if 'val_per_class' not in sig.parameters:
+        bad.append('Evaluator.record has no val_per_class parameter')
+
+    with open(os.path.join('sesil', 'evolution.py'), encoding='utf-8') as f:
+        tree = ast.parse(f.read())
+
+    passes = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = getattr(fn, 'attr', None)
+        if name not in ('record', 'maybe_record'):
+            continue
+        passes.append((name, any(k.arg == 'val_per_class' for k in node.keywords)))
+
+    if not passes:
+        bad.append('no evaluator record call found in evolution.py')
+    for name, has in passes:
+        if not has:
+            bad.append(f'evolution.py calls {name}() without val_per_class -- '
+                       f'that eval point will have no routed metric')
+
+    report('val-routed metric is wired into every evaluation', not bad, bad,
+           note='an unwired metric logs nothing and plots as an empty series')
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -745,6 +789,7 @@ def main():
     check_lazy_globa_matches_eager(report)
     check_mating_inputs(report)
     check_val_routed_metric(report)
+    check_val_routed_is_wired(report)
 
     print()
     if failures:
