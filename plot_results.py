@@ -62,6 +62,10 @@ METRIC_LABELS = {
     'population_best': 'Test accuracy (population best)',
     'population_worst': 'Test accuracy (population worst)',
     'population_median': 'Test accuracy (population median)',
+    # Routed on VALIDATION, read on TEST. oracle_overall routes on test itself,
+    # so it cannot be reached by any real system; these can.
+    'val_routed_overall': 'Test accuracy (val-selected agent per class)',
+    'val_best_agent_overall': 'Test accuracy (val-selected single agent)',
 }
 
 

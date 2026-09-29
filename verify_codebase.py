@@ -644,6 +644,64 @@ def check_mating_inputs(report):
                 'without any error')
 
 
+def check_val_routed_metric(report):
+    """Routing must select on validation and read accuracy from test.
+
+    The obvious bug is selecting and reading from the same matrix, which just
+    reproduces oracle_overall and would look entirely plausible in a plot --
+    a slightly-too-good curve is not something anyone spots by eye. So the
+    check feeds a case where the two matrices disagree on purpose and pins the
+    exact expected value.
+    """
+    from sesil.evaluator import Evaluator
+
+    bad = []
+    ev = Evaluator.__new__(Evaluator)          # _reduce needs no I/O state
+
+    # Two agents, three classes. Validation says agent 0 is best on class 0 and
+    # agent 1 on classes 1 and 2 -- but on TEST those picks score poorly. A
+    # router that peeked at test would score 0.9; one that honestly follows
+    # validation scores 0.2.
+    test = [[0.1, 0.9, 0.9],
+            [0.9, 0.2, 0.2]]
+    val = [[0.9, 0.1, 0.1],
+           [0.1, 0.9, 0.9]]
+    out = ev._reduce(test, [0.6, 0.4], val)
+
+    want_routed = (0.1 + 0.2 + 0.2) / 3
+    if abs(out['val_routed_overall'] - want_routed) > 1e-9:
+        bad.append(f'val_routed_overall = {out["val_routed_overall"]:.4f}, '
+                   f'wanted {want_routed:.4f} -- it is not following validation')
+    if abs(out['oracle_overall'] - 0.9) > 1e-9:
+        bad.append(f'oracle_overall = {out["oracle_overall"]:.4f}, wanted 0.9')
+    if abs(out['val_routed_overall'] - out['oracle_overall']) < 1e-9:
+        bad.append('routed equals oracle -- selection is reading the test matrix')
+
+    # The single-agent pick: validation prefers agent 1 (mean 0.633 vs 0.367),
+    # whose TEST mean is 0.4333.
+    want_single = (0.9 + 0.2 + 0.2) / 3
+    if abs(out['val_best_agent_overall'] - want_single) > 1e-9:
+        bad.append(f'val_best_agent_overall = {out["val_best_agent_overall"]:.4f}, '
+                   f'wanted {want_single:.4f}')
+
+    # One model, no validation supplied: the baseline. Routing is vacuous and
+    # must still be filled, or the two methods cannot share a plot axis.
+    solo = ev._reduce([[0.3, 0.5]], [0.4], None)
+    if 'val_routed_overall' not in solo:
+        bad.append('baseline (1 model) got no routed metric -- it cannot be '
+                   'plotted against sesil on a routed axis')
+    elif abs(solo['val_routed_overall'] - 0.4) > 1e-9:
+        bad.append(f'baseline routed = {solo["val_routed_overall"]:.4f}, wanted 0.4')
+
+    # No validation and several models: the fields must be ABSENT, not zero.
+    older = ev._reduce(test, [0.6, 0.4], None)
+    if 'val_routed_overall' in older:
+        bad.append('routed metric invented without a validation matrix')
+
+    report('val-routed metric selects on validation, reads on test', not bad, bad,
+           note='selecting on test is leakage and looks fine in a plot')
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -686,6 +744,7 @@ def main():
     check_series_fields_are_logged(report)
     check_lazy_globa_matches_eager(report)
     check_mating_inputs(report)
+    check_val_routed_metric(report)
 
     print()
     if failures:

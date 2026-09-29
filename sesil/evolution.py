@@ -128,6 +128,9 @@ def evaluate_and_certify(agent_ids, raw_config, args, data, budget, logger, gene
         record['Model Name'] = agent_id      # selection keys on the id
         record['Certificate'] = cert
         record['Strength'] = strength
+        # Kept so the evaluator can route on validation without measuring it
+        # again: this is the same vector, already paid for.
+        record['ValPerClass'] = per_class
         population_info.append(record)
 
     stats = coverage(certificates, args.num_classes)
@@ -557,7 +560,13 @@ def run_evolution(args, budget, data, logger, evaluator):
 
             # External evaluation on the held-out test split, on the budget
             # watermark -- the x-values the baseline's curve lines up with.
-            evaluator.maybe_record(models, step=generation, step_kind='generation')
+            # The validation matrix goes with the models so the evaluator can
+            # decide WHICH agent to trust per class on validation, and only
+            # then read that agent's test accuracy. Costs nothing: these
+            # numbers were just measured for certification.
+            evaluator.maybe_record(
+                models, step=generation, step_kind='generation',
+                val_per_class=[info['ValPerClass'] for info in population_info])
 
             # GLOBA scoring needs the agents' weights and the shared
             # backbone, neither of which selection can reach on its own.
@@ -651,7 +660,16 @@ def run_evolution(args, budget, data, logger, evaluator):
             final_models = [
                 _load_agent(a, raw_config, data, budget)[0] for a in final_ids
             ]
-            evaluator.record(final_models, step=generation, step_kind='generation', final=True)
+            # Validation too, so the final point carries the routed metrics like
+            # every other point. Without this the last sample of the curve is
+            # the only one missing them, which breaks the series exactly where
+            # a reader looks first.
+            final_val = [
+                evaluate_all_classes(m, data.val_loader(), args.num_classes)[0]
+                for m in final_models
+            ]
+            evaluator.record(final_models, step=generation, step_kind='generation',
+                             final=True, val_per_class=final_val)
 
     print(f'\n{budget.report()}')
     print(f'\nDone after {completed} generation(s). Logs: {args.run_dir}')

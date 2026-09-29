@@ -85,7 +85,8 @@ class Evaluator:
             self.next_watermark += self.eval_interval
         return record
 
-    def record(self, models, step=None, step_kind=None, final=False, **extra):
+    def record(self, models, step=None, step_kind=None, final=False,
+               val_per_class=None, **extra):
         """Evaluate unconditionally and log one aligned point.
 
         The schema is deliberately identical for every method. SESiL counts in
@@ -103,7 +104,7 @@ class Evaluator:
             overall.append(ov)
             self.budget.count_forward_test(1)
 
-        record = self._reduce(per_class, overall)
+        record = self._reduce(per_class, overall, val_per_class)
         record.update(self.meta)
         record['budget'] = round(self.budget.spent, 4)
         record['phase_start'] = round(self.phase_start, 4)
@@ -120,8 +121,20 @@ class Evaluator:
 
     # ------------------------------------------------------------------ #
 
-    def _reduce(self, per_class, overall):
-        """Collapse a population's accuracy matrix into the logged reductions."""
+    def _reduce(self, per_class, overall, val_per_class=None):
+        """Collapse a population's accuracy matrix into the logged reductions.
+
+        `val_per_class` is the same shaped matrix measured on VALIDATION. When
+        given, it supplies the routed reductions: which agent to trust for a
+        class is decided on validation, and only then is that agent's TEST
+        accuracy read. `oracle_overall` decides on test itself, which is
+        leakage -- it is kept because it is what earlier runs reported, but the
+        routed version is the one a real system could reach.
+
+        Measured on a finished run, the difference is small: 0.6261 routed on
+        validation against 0.6392 routed on test. Small, but it is the
+        difference between a number you can build and a number you cannot.
+        """
         matrix = np.asarray(per_class, dtype=float)       # [agents, classes]
         overall = np.asarray(overall, dtype=float)        # [agents]
 
@@ -129,6 +142,35 @@ class Evaluator:
         balanced = matrix.mean(axis=1)                    # per-agent mean over classes
         balanced_idx = int(np.argmax(balanced))
         oracle_per_class = matrix.max(axis=0)             # best agent per class
+
+        routed = {}
+        if val_per_class is not None:
+            val = np.asarray(val_per_class, dtype=float)
+            if val.shape == matrix.shape:
+                # Per class, the agent validation says is best for it; read
+                # that agent's TEST accuracy. np.argmax breaks ties by lowest
+                # index, which is arbitrary but fixed -- and ties here mean two
+                # agents validate identically, so either is a fair pick.
+                pick = val.argmax(axis=0)
+                routed_per_class = matrix[pick, np.arange(matrix.shape[1])]
+                val_best = int(val.mean(axis=1).argmax())
+                routed = {
+                    'val_routed_overall': float(routed_per_class.mean()),
+                    'val_best_agent_overall': float(matrix[val_best].mean()),
+                    'val_best_agent_index': val_best,
+                    'per_class_val_routed': [round(v, 5)
+                                             for v in routed_per_class.tolist()],
+                }
+        elif matrix.shape[0] == 1:
+            # One model -- the baseline. Routing is vacuous, so the routed
+            # numbers equal its own accuracy. Filling them in keeps one schema
+            # for both methods, which is what lets them share a plot axis.
+            routed = {
+                'val_routed_overall': float(matrix[0].mean()),
+                'val_best_agent_overall': float(matrix[0].mean()),
+                'val_best_agent_index': 0,
+                'per_class_val_routed': [round(v, 5) for v in matrix[0].tolist()],
+            }
 
         return {
             # headline candidates
@@ -147,4 +189,8 @@ class Evaluator:
             'per_class_oracle': [round(v, 5) for v in oracle_per_class.tolist()],
             'per_class_mean': [round(v, 5) for v in matrix.mean(axis=0).tolist()],
             'per_class_best_agent': [round(v, 5) for v in matrix[best_idx].tolist()],
+            # Routed on validation -- empty when no validation matrix was
+            # supplied, so an older log stays readable and a plot asking for a
+            # routed metric fails loudly instead of silently plotting nothing.
+            **routed,
         }
