@@ -288,7 +288,7 @@ def print_table(series_data, metric, band):
 
 def render(series_data, phase_starts, metric, band, out_path, mode, title,
            ylabel=None, xlabel='Training budget  (epoch-equivalents)',
-           legend_loc='lower right'):
+           legend_loc='lower right', overlay=None, overlay_metric=None):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -319,6 +319,15 @@ def render(series_data, phase_starts, metric, band, out_path, mode, title,
                 mec=t['surface'], mew=1.2, solid_capstyle='round',
                 zorder=4, label=f'{name}  (n={n_seeds})')
         ends.append((float(centre[-1]), float(x[-1]), name, colour))
+
+        # A SECOND metric for the same series: same colour so the pairing is
+        # unambiguous, dotted and unmarkered so it never competes with the
+        # headline. No band -- two shaded regions per colour is unreadable, and
+        # the overlay is here for level and shape, not spread.
+        if overlay and name in overlay:
+            ox, ocentre = overlay[name]
+            ax.plot(ox, ocentre, color=colour, lw=1.5, ls=(0, (1.5, 2.2)),
+                    alpha=0.9, zorder=3)
 
     # ---- recessive axes ----------------------------------------------- #
     all_x = np.concatenate([d[0] for d in series_data.values()])
@@ -355,7 +364,24 @@ def render(series_data, phase_starts, metric, band, out_path, mode, title,
 
     # 'none' drops the box and leaves the direct end-of-line labels to do the
     # identifying, which is enough when the curves are separated.
-    if legend_loc != 'none':
+    if overlay and overlay_metric:
+        # The dotted lines carry no label of their own, so say once what they
+        # are -- in the legend if there is one, otherwise in the corner.
+        note = f'dotted: {METRIC_LABELS.get(overlay_metric, overlay_metric)}'
+        if legend_loc != 'none':
+            from matplotlib.lines import Line2D
+            handles, labels = ax.get_legend_handles_labels()
+            handles.append(Line2D([0], [0], color=t['muted'], lw=1.5,
+                                  ls=(0, (1.5, 2.2))))
+            labels.append(note)
+            ax.legend(handles, labels, frameon=False, loc=legend_loc,
+                      fontsize=9, labelcolor=t['ink_2'], handlelength=1.6)
+        else:
+            # Bottom RIGHT: bottom-left is where the pretrain shading and its
+            # annotation live, and the note was landing on top of them.
+            ax.annotate(note, xy=(0.985, 0.04), xycoords='axes fraction',
+                        color=t['muted'], fontsize=9, ha='right', zorder=5)
+    elif legend_loc != 'none':
         ax.legend(frameon=False, loc=legend_loc, fontsize=9,
                   labelcolor=t['ink_2'], handlelength=1.6)
 
@@ -420,6 +446,13 @@ def main():
                         'sweep whose curves all end high needs it out of the '
                         "way, usually upper right. 'none' drops the box "
                         'entirely and relies on the direct end-of-line labels.')
+    p.add_argument('--overlay-metric', default=None,
+                   help='A SECOND metric drawn per series as a dotted line in '
+                        'the same colour, without a band. For putting the '
+                        'conservative reading beside the headline one, e.g. '
+                        '--metric oracle_overall --overlay-metric '
+                        'best_agent_overall shows the single deployable agent '
+                        'under the society-wide oracle.')
     p.add_argument('--table', action='store_true',
                    help='also print the numbers behind every point')
     p.add_argument('--list-metrics', action='store_true',
@@ -505,8 +538,26 @@ def main():
             print(f'  NOTE: seeds of {name!r} have different budget grids; '
                   f'interpolated onto their overlap. Compare with care.')
 
+    overlay = None
+    if args.overlay_metric:
+        overlay = {}
+        for name, members in grouped.items():
+            missing = [m['dir'] for m in members
+                       if args.overlay_metric not in m['records'][0]]
+            if missing:
+                raise SystemExit(
+                    f'--overlay-metric {args.overlay_metric!r} not in '
+                    f'{missing[0]}. Run with --list-metrics to see what is '
+                    f'available.')
+            ox, ocentre, _lo, _hi, _n, _i = aggregate(
+                members, args.overlay_metric, 'none', x_axis=args.x_axis,
+                fwd_bwd_ratio=args.fwd_bwd_ratio)
+            overlay[name] = (ox, ocentre)
+
     if renames:
         series_data = {renames.get(k, k): v for k, v in series_data.items()}
+        if overlay:
+            overlay = {renames.get(k, k): v for k, v in overlay.items()}
 
     if args.table:
         print_table(series_data, args.metric, args.band)
@@ -521,7 +572,7 @@ def main():
     phase = [] if args.x_axis == 'total-flops' else [r['phase_start'] for r in runs]
     render(series_data, phase,
            args.metric, args.band, out, args.mode, title, args.ylabel, xlabel,
-           args.legend_loc)
+           args.legend_loc, overlay, args.overlay_metric)
 
 
 if __name__ == '__main__':
