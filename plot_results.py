@@ -66,6 +66,14 @@ METRIC_LABELS = {
     # so it cannot be reached by any real system; these can.
     'val_routed_overall': 'Test accuracy (val-selected agent per class)',
     'val_best_agent_overall': 'Test accuracy (val-selected single agent)',
+    # Ensemble: the population forced to emit ONE prediction per input, which
+    # is the only reading directly comparable to the baseline's single model.
+    'ensemble_hard': 'Test accuracy (hard vote)',
+    'ensemble_soft': 'Test accuracy (soft vote)',
+    'ensemble_conf_weighted': 'Test accuracy (confidence-weighted vote)',
+    'ensemble_soft_certified': 'Test accuracy (soft vote, certified agents)',
+    'ensemble_soft_certified_norm': 'Test accuracy (certificate-normalised soft vote)',
+    'ensemble_max_confidence': 'Test accuracy (most confident agent)',
 }
 
 

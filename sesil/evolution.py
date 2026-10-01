@@ -566,7 +566,8 @@ def run_evolution(args, budget, data, logger, evaluator):
             # numbers were just measured for certification.
             evaluator.maybe_record(
                 models, step=generation, step_kind='generation',
-                val_per_class=[info['ValPerClass'] for info in population_info])
+                val_per_class=[info['ValPerClass'] for info in population_info],
+                certificates=[info['Certificate'] for info in population_info])
 
             # GLOBA scoring needs the agents' weights and the shared
             # backbone, neither of which selection can reach on its own.
@@ -668,8 +669,12 @@ def run_evolution(args, budget, data, logger, evaluator):
                 evaluate_all_classes(m, data.val_loader(), args.num_classes)[0]
                 for m in final_models
             ]
+            final_certs = certify_population(
+                final_val, top_frac=args.certify_top_frac,
+                floor=args.certify_floor, num_classes=args.num_classes)
             evaluator.record(final_models, step=generation, step_kind='generation',
-                             final=True, val_per_class=final_val)
+                             final=True, val_per_class=final_val,
+                             certificates=final_certs)
 
     print(f'\n{budget.report()}')
     print(f'\nDone after {completed} generation(s). Logs: {args.run_dir}')

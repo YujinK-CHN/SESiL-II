@@ -62,6 +62,8 @@ def main(argv=None):
         eval_interval=args.eval_interval,
         logger=logger,
         budget=budget,
+        log_predictions=getattr(args, 'log_predictions', False),
+        run_dir=args.run_dir,
         # Carried on every eval record so plot_results can separate variants
         # without anyone having to remember which directory was which.
         # Carried on every eval record so plot_results can tell one arm from

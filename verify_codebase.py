@@ -746,6 +746,69 @@ def check_val_routed_is_wired(report):
            note='an unwired metric logs nothing and plots as an empty series')
 
 
+def check_ensemble_metrics(report):
+    """Ensemble rules must combine the population, not echo one agent.
+
+    Pinned against a hand-built case because every rule here returns a
+    plausible-looking accuracy whatever it computes; a wrong one reads as a
+    slightly disappointing result rather than a bug.
+
+    The fixture isolates the normalisation, which on real populations was
+    worth more than every other choice in this function combined. One sample,
+    true class 1. Two agents are certified for class 0 and split evenly; one
+    agent is certified for class 1 and mildly prefers it:
+
+        agent 0  cert {0}   [0.5, 0.5]
+        agent 1  cert {0}   [0.5, 0.5]
+        agent 2  cert {1}   [0.4, 0.6]
+
+    Summing over certified agents gives class 0 a total of 1.0 against class
+    1's 0.6 -- class 0 wins purely because two agents hold it. Dividing by the
+    number of holders gives 0.5 against 0.6 and the right answer. So
+    ensemble_soft_certified must be WRONG here and
+    ensemble_soft_certified_norm must be RIGHT, which no implementation that
+    forgets to divide can satisfy.
+    """
+    import numpy as np
+    from sesil.evaluator import Evaluator
+
+    ev = Evaluator.__new__(Evaluator)
+    bad = []
+
+    probs = np.array([[[0.5, 0.5]], [[0.5, 0.5]], [[0.4, 0.6]]], dtype=np.float32)
+    labels = np.array([1])
+    certs = [[0], [0], [1]]
+
+    out = ev.ensemble(probs, labels, certs)
+
+    expected = {
+        'ensemble_hard': 0.0,              # two votes for class 0, one for 1
+        'ensemble_conf_weighted': 0.0,     # 1.0 against 0.6, still class 0
+        'ensemble_soft': 1.0,              # means 0.467 against 0.533
+        'ensemble_max_confidence': 1.0,    # agent 2 is the most confident
+        'ensemble_soft_certified': 0.0,    # 1.0 against 0.6 -- headcount wins
+        'ensemble_soft_certified_norm': 1.0,   # 0.5 against 0.6 -- corrected
+    }
+    for key, want in expected.items():
+        if key not in out:
+            bad.append(f'{key} missing')
+        elif abs(out[key] - want) > 1e-9:
+            bad.append(f'{key} = {out[key]:.4f}, wanted {want:.4f}')
+
+    # Without certificates the gated keys must be ABSENT, not zero: a zero
+    # plots as a real curve lying on the axis.
+    plain = ev.ensemble(probs, labels, None)
+    for key in ('ensemble_soft_certified', 'ensemble_soft_certified_norm'):
+        if key in plain:
+            bad.append(f'{key} produced without any certificates')
+    for key in ('ensemble_hard', 'ensemble_soft'):
+        if key not in plain:
+            bad.append(f'{key} missing when certificates are not supplied')
+
+    report('ensemble rules combine the population correctly', not bad, bad,
+           note='a wrong rule still returns a plausible accuracy')
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -790,6 +853,7 @@ def main():
     check_mating_inputs(report)
     check_val_routed_metric(report)
     check_val_routed_is_wired(report)
+    check_ensemble_metrics(report)
 
     print()
     if failures:

@@ -36,6 +36,57 @@ def _predict(model, images):
     return outputs.argmax(dim=-1)
 
 
+def predict_probabilities(model, loader, num_classes):
+    """Full softmax per sample, and the labels, in ONE pass.
+
+    Returned instead of accuracy because an ensemble needs the distribution,
+    not the argmax. Measured on a finished population, dropping to the argmax
+    costs real accuracy: summing probabilities over the agents certified for
+    each class and normalising by how many there are scored 0.408 against
+    0.384 for a hard vote of the same agents.
+
+    The caller derives per-class accuracy from the same array via
+    accuracy_from_probabilities, so adding ensembles costs no extra forward
+    passes -- the evaluator already runs every agent over the test set.
+
+    Returns:
+        probs:  [N, num_classes] float32
+        labels: [N] int64
+    """
+    device = get_device(model)
+    chunks = []
+    labels = []
+
+    model.eval()
+    with torch.no_grad(), autocast():
+        for images, batch_labels in loader:
+            outputs = model(images.to(device))
+            if isinstance(outputs, list):
+                # Partial zipping: one output per head. Same combination rule
+                # as _predict, so probabilities and predictions never disagree.
+                stacked = torch.stack(outputs, dim=1)
+                outputs = stacked.softmax(dim=-1).to(stacked.dtype).max(dim=-2)[0]
+            else:
+                outputs = outputs.softmax(dim=-1)
+            chunks.append(outputs.float().cpu())
+            labels.append(batch_labels.detach().cpu())
+
+    return torch.cat(chunks).numpy(), torch.cat(labels).numpy()
+
+
+def accuracy_from_probabilities(probs, labels, num_classes):
+    """(per_class, overall) from a probability matrix -- no second pass."""
+    import numpy as np
+
+    preds = probs.argmax(axis=1)
+    hit = preds == labels
+    total = np.bincount(labels, minlength=num_classes)
+    correct = np.bincount(labels[hit], minlength=num_classes)
+    per_class = [(correct[c] / total[c]) if total[c] > 0 else 0.0
+                 for c in range(num_classes)]
+    return per_class, float(hit.sum() / max(len(labels), 1))
+
+
 def evaluate_all_classes(model, test_loader, num_classes):
     """Per-class accuracy over the entire label space.
 

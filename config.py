@@ -315,6 +315,17 @@ def _add_evolution_config(parser):
                        help='Safety cap. The real stopping condition is --budget; '
                             'this only prevents an unbounded loop if the per-generation '
                             'cost is tiny.')
+    group.add_argument('--log-predictions', action='store_true',
+                       help="Dump every agent's full probability vector over "
+                            'the test set at each evaluation, to '
+                            '<run>/predictions/step_N.npz (float16, '
+                            'compressed; about 40 MB per evaluation at 20 '
+                            'agents on CIFAR-100). The ensemble ACCURACIES are '
+                            'logged either way -- this is only for analysis '
+                            'they cannot answer afterwards, such as population '
+                            'entropy, agreement, or a voting rule invented '
+                            'later. Off by default because it is the only '
+                            'thing here that costs real disk.')
     group.add_argument('--keep-generations', type=int, default=2,
                        help='How many of the most recent generation directories to '
                             'keep on disk. Generation 0 is always kept -- it is the '
