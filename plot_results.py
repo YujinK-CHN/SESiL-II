@@ -292,7 +292,8 @@ def print_table(series_data, metric, band):
 
 def render(series_data, phase_starts, metric, band, out_path, mode, title,
            ylabel=None, xlabel='Training budget  (epoch-equivalents)',
-           legend_loc='lower right', overlay=None, overlay_metric=None):
+           legend_loc='lower right', overlay=None, overlay_metric=None,
+           direct_labels=True):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -336,7 +337,10 @@ def render(series_data, phase_starts, metric, band, out_path, mode, title,
     # ---- recessive axes ----------------------------------------------- #
     all_x = np.concatenate([d[0] for d in series_data.values()])
     span = all_x.max() - all_x.min()
-    ax.set_xlim(all_x.min() - 0.03 * span, all_x.max() + 0.22 * span)
+    # The right margin exists to hold the direct labels. Without them it is
+    # just empty plot, so give the space back to the curves.
+    right = 0.22 if direct_labels else 0.02
+    ax.set_xlim(all_x.min() - 0.03 * span, all_x.max() + right * span)
 
     # ---- direct labels, nudged apart so they never overlap ------------- #
     # Series that converge end at nearly the same y, and two labels stacked on
@@ -346,7 +350,7 @@ def render(series_data, phase_starts, metric, band, out_path, mode, title,
     min_gap = 0.05 * (hi_y - lo_y)
 
     y_label = None
-    for y_end, x_end, name, colour in sorted(ends):
+    for y_end, x_end, name, colour in (sorted(ends) if direct_labels else []):
         y_label = y_end if y_label is None else max(y_end, y_label + min_gap)
         ax.annotate(name, xy=(x_end, y_label), xytext=(8, 0),
                     textcoords='offset points', va='center', ha='left',
@@ -450,6 +454,12 @@ def main():
                         'sweep whose curves all end high needs it out of the '
                         "way, usually upper right. 'none' drops the box "
                         'entirely and relies on the direct end-of-line labels.')
+    p.add_argument('--direct-labels', default='on', choices=['on', 'off'],
+                   help="Whether each curve is named beside its right-hand end. "
+                        "'on' (default) suits a figure with no legend; 'off' "
+                        'when the legend already names them and the repetition '
+                        'is clutter. Turning them off also reclaims the right '
+                        'margin that held them.')
     p.add_argument('--overlay-metric', default=None,
                    help='A SECOND metric drawn per series as a dotted line in '
                         'the same colour, without a band. For putting the '
@@ -576,7 +586,8 @@ def main():
     phase = [] if args.x_axis == 'total-flops' else [r['phase_start'] for r in runs]
     render(series_data, phase,
            args.metric, args.band, out, args.mode, title, args.ylabel, xlabel,
-           args.legend_loc, overlay, args.overlay_metric)
+           args.legend_loc, overlay, args.overlay_metric,
+           args.direct_labels == 'on')
 
 
 if __name__ == '__main__':
