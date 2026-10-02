@@ -146,6 +146,16 @@ class Evaluator:
             'ensemble_max_confidence': acc(arg[top.argmax(axis=0), rows]),
         }
 
+        if certificates is None and n_agents == 1:
+            # The baseline: one model, so every rule here is that model. The
+            # gated keys have to be filled rather than omitted, or SESiL's
+            # ensemble cannot be plotted against the baseline on one axis --
+            # which is the only comparison these metrics exist for. Same
+            # reasoning as the single-model fallback in _reduce.
+            solo = float((probs[0].argmax(axis=1) == labels).mean())
+            out['ensemble_soft_certified'] = solo
+            out['ensemble_soft_certified_norm'] = solo
+
         if certificates is not None:
             mask = np.zeros((n_agents, n_classes), dtype=bool)
             for i, cert in enumerate(certificates):
