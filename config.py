@@ -402,15 +402,30 @@ def _add_certificate_config(parser):
     certified in what. See sesil/certificate.py.
     """
     group = parser.add_argument_group('certificate')
-    group.add_argument('--certify-top-frac', type=float, default=0.3,
+    group.add_argument('--certify-top-frac', type=float, default=1.0,
                        help='Fraction of the population that may hold a certificate '
-                            'in any one class. Proficiency is relative: an agent must '
-                            'be in this top slice of its peers on a class to be '
-                            'licensed to train on it.')
+                            'in any one class. 1.0 -- the default and the SESiL-I '
+                            'reference -- means no ranking at all: every agent that '
+                            'clears --certify-floor is certified. Below 1.0 makes '
+                            'proficiency RELATIVE, so an agent must be in this top '
+                            'slice of its peers to be licensed, which turns the '
+                            'certificate into a contested resource. That competition '
+                            'is a SESiL-II addition, so it is passed explicitly '
+                            '(e.g. 0.3) rather than assumed. It does not change how '
+                            'many classes the society covers -- measured identical '
+                            'from 0.1 to 1.0, since coverage is just "some agent is '
+                            'above the floor" either way -- it changes how many '
+                            'classes each agent holds, and therefore how thinly its '
+                            'training budget is spread.')
     group.add_argument('--certify-floor', type=float, default=0.5,
                        help='Absolute accuracy a certificate also requires, whatever '
                             'the ranking says. Without it, the top slice of a '
                             'uniformly incompetent population still gets certified.')
+
+
+# The parser's own default, named so validate() can tell a chosen value from an
+# inherited one without re-reading argv.
+_CERT_WITH_DEFAULT = 'accuracy'
 
 
 def _add_selection_config(parser):
@@ -463,18 +478,22 @@ def _add_selection_config(parser):
                             '1, so any sum over a subset is the mirror image of what '
                             'is left out -- summing all types but D_minus is exactly '
                             'minimising D_minus.')
-    group.add_argument('--cert-with', type=str, default='count',
+    group.add_argument('--cert-with', type=str, default=_CERT_WITH_DEFAULT,
                        choices=['count', 'accuracy'],
                        help="CERTIFICATE MODE ONLY. "
                             "What a certified class is worth when scoring a mate. "
-                            "'count': all certified classes weigh the same -- the pure "
-                            "certificate, and the default, because mate choice decides "
-                            "the offspring's inherited certificate, which is the union "
-                            "of the parents' certificate SETS. "
-                            "'accuracy': weigh by the mate's raw accuracy on the class; "
-                            "prefers strong certificate holders but discriminates only "
-                            "within an already-selected band and flattens as the "
-                            "population saturates. "
+                            "'count': all certified classes weigh the same -- the "
+                            "pure certificate, since mate choice decides the "
+                            "offspring's inherited certificate, which is the union of "
+                            "the parents' certificate SETS. "
+                            "'accuracy' (default, and the SESiL-I reference): weigh by "
+                            "the mate's raw accuracy on the class, preferring strong "
+                            "holders. Measured on evolved populations the two barely "
+                            "differ in how sharply they discriminate -- both put about "
+                            "0.075 probability on the top candidate against 0.053 for "
+                            "uniform -- but 'accuracy' is continuous and so almost "
+                            "never ties (1.0 candidates at the top, against 2.4 for "
+                            "'count'), which is why hybrid mating refuses it. "
                             "A 'rank' mode (population percentile per class) was "
                             "removed: certification already applies rank AND floor to "
                             "decide WHICH classes count, so rank only re-weighted "
@@ -828,7 +847,10 @@ def validate(args):
         warn.append(f'--globa-with {args.globa_with} is ignored without '
                     f'--mating-mode globa')
     if args.mating_mode not in ('certificate', 'hybrid'):
-        if args.cert_with != 'count':
+        # Only when the value was CHOSEN. --cert-with has a default, and warning
+        # about a default on every globa run is noise that trains people to
+        # ignore the warnings that matter.
+        if args.cert_with != _CERT_WITH_DEFAULT:
             warn.append(f'--cert-with {args.cert_with} is ignored under '
                         f'--mating-mode {args.mating_mode}')
 

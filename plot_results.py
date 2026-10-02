@@ -95,7 +95,7 @@ def find_runs(root):
 # configuration and is labelled by merger and pretrain alone.
 SESIL_REFERENCE = {
     'mating_mode': 'certificate',
-    'cert_with': 'count',
+    'cert_with': 'accuracy',
     'globa_with': None,
     'mutation_mode': 'random',
     'merge_head': 'average',
@@ -103,7 +103,7 @@ SESIL_REFERENCE = {
     'subset_mode': 'random',
     'mating_rounds': 15,
     'individual_budget': 0.5,
-    'certify_top_frac': 0.3,
+    'certify_top_frac': 1.0,
 }
 
 

@@ -40,14 +40,18 @@ REFERENCE_DEFAULTS = {
     'subset_mode': 'random',
     'phase_b_freeze': 0.0,
     'mating_mode': 'certificate',
-    'cert_with': 'count',
+    # SESiL-I weights a candidate's classes by how well it actually does them.
+    'cert_with': 'accuracy',
     'weight_extra': 1.0,
     'weight_common': 0.1,
     'merger': 'permute',
     'merge_head': 'average',
     'stop_node': None,
     'merge_bias': 0.5,
-    'certify_top_frac': 0.3,
+    # 1.0 = no ranking. SESiL-I certifies every agent that clears the floor;
+    # capping how many may hold a class is a SESiL-II addition, so it is a
+    # named flag on top of this rather than part of the reference.
+    'certify_top_frac': 1.0,
     'certify_floor': 0.5,
 }
 
