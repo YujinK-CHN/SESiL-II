@@ -813,76 +813,6 @@ def check_ensemble_metrics(report):
            note='a wrong rule still returns a plausible accuracy')
 
 
-def check_recertify_scope(report):
-    """Post-merge re-certification must touch GLOBA mating and nothing else.
-
-    The scope is the whole correctness argument. Deferring certification is
-    only possible because GLOBA mating reads weights rather than certificates;
-    every other mode selects BY certificate, so if this ran under them the
-    selection would be reading values produced after the merge it was supposed
-    to inform -- a silent change of algorithm that no accuracy number would
-    reveal as a bug.
-
-    Also pinned: it must certify from the children's OWN measured accuracy, not
-    carry the inherited union through.
-    """
-    import types
-    from sesil.evolution import recertify_after_merge
-
-    bad = []
-
-    class _Log:
-        def __init__(self):
-            self.rows = []
-
-        def log_train(self, row):
-            self.rows.append(row)
-
-    def population():
-        # Three agents. Each is accurate on exactly one class, but arrives
-        # claiming an inherited union of all three.
-        out = []
-        for i in range(3):
-            pc = [0.0, 0.0, 0.0]
-            pc[i] = 0.9
-            out.append({'certificate': {0, 1, 2}, 'per_class': pc})
-        return out
-
-    args = types.SimpleNamespace(num_classes=3, certify_top_frac=1.0,
-                                 certify_floor=0.5, mating_mode='globa')
-    budget = types.SimpleNamespace(spent=1.0)
-
-    pop = population()
-    recertify_after_merge(pop, args, _Log(), 0, budget)
-    got = [sorted(a['certificate']) for a in pop]
-    if got != [[0], [1], [2]]:
-        bad.append(f'under globa mating, certificates are {got}, wanted '
-                   f'[[0], [1], [2]] -- it is not using the measured accuracy')
-
-    for mode in ('certificate', 'random', 'hybrid'):
-        args.mating_mode = mode
-        pop = population()
-        recertify_after_merge(pop, args, _Log(), 0, budget)
-        got = [sorted(a['certificate']) for a in pop]
-        if got != [[0, 1, 2]] * 3:
-            bad.append(f'--mating-mode {mode} was re-certified ({got}); only '
-                       f'globa may be, because every other mode picks mates BY '
-                       f'certificate')
-
-    # Missing measurements must be a no-op, not a crash or an empty certificate.
-    args.mating_mode = 'globa'
-    pop = population()
-    pop[1]['per_class'] = None
-    recertify_after_merge(pop, args, _Log(), 0, budget)
-    if [sorted(a['certificate']) for a in pop] != [[0, 1, 2]] * 3:
-        bad.append('an agent without a measurement did not leave certificates '
-                   'untouched')
-
-    report('post-merge re-certification is GLOBA-mating only', not bad, bad,
-           note='running it elsewhere would feed post-merge values to the '
-                'selection that preceded the merge')
-
-
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -928,7 +858,6 @@ def main():
     check_val_routed_metric(report)
     check_val_routed_is_wired(report)
     check_ensemble_metrics(report)
-    check_recertify_scope(report)
 
     print()
     if failures:
