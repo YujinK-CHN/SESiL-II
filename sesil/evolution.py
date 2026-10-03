@@ -360,6 +360,66 @@ def generation_mutation_cost(offspring, args):
     return len(offspring) * args.individual_budget
 
 
+def recertify_after_merge(offspring, args, logger, generation, budget):
+    """Re-grant certificates AFTER merging, from what the children can do.
+
+    GLOBA MATING ONLY, and only because GLOBA mating is what makes it possible:
+    mate choice reads the agents' weights, not their certificates, so nothing
+    upstream of the merge needs a certificate to exist. Every other mode picks
+    mates BY certificate, so deferring would leave selection with nothing to
+    read.
+
+    What changes. Normally a child inherits the UNION of its parents'
+    certificates -- a claim made before the merge happened, carried for one
+    generation and only then checked. Here the child is certified on its own
+    measured accuracy, so what it is licensed to train on is what the merge
+    actually produced. Merging loses things, so expect SMALLER certificates
+    than the inherited union; that is the correction, not a regression.
+
+    It costs nothing. breed() already evaluates every child on validation the
+    moment it is assembled -- the label head and --mutation-mode best/worse
+    both need it -- and stores the vector on the offspring record. Loners carry
+    their measurement forward from the start of the generation, which is still
+    their own: a loner is passed through untouched.
+
+    One inconsistency is accepted deliberately. certify_population RANKS agents
+    against each other, and here the children were measured after their merge
+    while the loners were measured before it. Re-measuring the loners would
+    make the comparison simultaneous, and would cost a full evaluation pass per
+    generation -- the exact cost this arm exists to avoid.
+    """
+    if args.mating_mode != 'globa':
+        return
+
+    per_class = [o.get('per_class') for o in offspring]
+    if any(p is None or len(p) < args.num_classes for p in per_class):
+        print(f'[gen {generation}] post-merge certification skipped: '
+              f'some agents have no measured accuracy')
+        return
+
+    before = sum(len(o['certificate']) for o in offspring) / max(len(offspring), 1)
+    fresh = certify_population(
+        per_class,
+        top_frac=args.certify_top_frac,
+        floor=args.certify_floor,
+        num_classes=args.num_classes,
+    )
+    for agent, cert in zip(offspring, fresh):
+        agent['certificate'] = cert
+
+    stats = coverage(fresh, args.num_classes)
+    print(f'[gen {generation}] re-certified after merging: '
+          f'{before:.1f} -> {stats["cert_size_mean"]:.1f} classes per agent, '
+          f'{stats["classes_covered"]}/{args.num_classes} covered')
+    logger.log_train({
+        'stage': 'recertification',
+        'generation': generation,
+        'budget': round(budget.spent, 4),
+        'inherited_cert_size_mean': round(before, 4),
+        **stats,
+    })
+
+
 def mutate_and_save(offspring, args, data, next_dir, budget, logger, generation):
     """Finetune each agent on its licensed classes, then write the next generation.
 
@@ -630,6 +690,8 @@ def run_evolution(args, budget, data, logger, evaluator):
                               args, data, budget, logger, generation,
                               globa_core=globa_core)
             print(f'[gen {generation}] produced {len(offspring)} agents')
+
+            recertify_after_merge(offspring, args, logger, generation, budget)
 
         # Stop before mutating if this generation would overrun the budget --
         # a partially-finetuned generation is not a meaningful result.
