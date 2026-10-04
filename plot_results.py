@@ -301,10 +301,17 @@ def print_table(series_data, metric, band):
 def render(series_data, phase_starts, metric, band, out_path, mode, title,
            ylabel=None, xlabel='Training budget  (epoch-equivalents)',
            legend_loc='lower right', overlay=None, overlay_metric=None,
-           direct_labels=True):
+           direct_labels=True, legend_fontsize=9.0, phase_note=True):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+
+    # Vector output for LaTeX: give --out a .pdf (or .svg) extension and
+    # matplotlib picks the format from it. Type 42 embeds TrueType rather than
+    # matplotlib's default Type 3, which several venues reject outright and
+    # which some PDF viewers render badly at small sizes.
+    matplotlib.rcParams['pdf.fonttype'] = 42
+    matplotlib.rcParams['ps.fonttype'] = 42
 
     t = THEME[mode]
 
@@ -316,11 +323,16 @@ def render(series_data, phase_starts, metric, band, out_path, mode, title,
     for phase in sorted({round(p, 6) for p in phase_starts if p > 0}):
         ax.axvspan(0, phase, color=t['muted'], alpha=0.07, lw=0, zorder=0)
         ax.axvline(phase, color=t['muted'], ls=(0, (5, 4)), lw=1.4, zorder=1)
-        ax.annotate(f'pretrain complete at {phase:g}\nevolution budget starts here',
-                    xy=(phase, 0.985), xycoords=('data', 'axes fraction'),
-                    xytext=(6, -4), textcoords='offset points',
-                    color=t['ink_2'], fontsize=9, va='top', ha='left',
-                    linespacing=1.4, zorder=5)
+        # The dashed line and the shaded region always stay -- they are what
+        # the reader needs. The two-line caption is only worth its space the
+        # first time, and in a set of figures it repeats while competing with
+        # the legend for the upper-left corner.
+        if phase_note:
+            ax.annotate(f'pretrain complete at {phase:g}\nevolution budget starts here',
+                        xy=(phase, 0.985), xycoords=('data', 'axes fraction'),
+                        xytext=(6, -4), textcoords='offset points',
+                        color=t['ink_2'], fontsize=9, va='top', ha='left',
+                        linespacing=1.4, zorder=5)
 
     # ---- one line per series ------------------------------------------ #
     ends = []
@@ -362,7 +374,7 @@ def render(series_data, phase_starts, metric, band, out_path, mode, title,
         y_label = y_end if y_label is None else max(y_end, y_label + min_gap)
         ax.annotate(name, xy=(x_end, y_label), xytext=(8, 0),
                     textcoords='offset points', va='center', ha='left',
-                    color=colour, fontsize=9.5, zorder=5,
+                    color=colour, fontsize=legend_fontsize + 0.5, zorder=5,
                     annotation_clip=False)
 
     ax.set_xlabel(xlabel, color=t['ink_2'], fontsize=10)
@@ -391,14 +403,16 @@ def render(series_data, phase_starts, metric, band, out_path, mode, title,
                                   ls=(0, (1.5, 2.2))))
             labels.append(note)
             ax.legend(handles, labels, frameon=False, loc=legend_loc,
-                      fontsize=9, labelcolor=t['ink_2'], handlelength=1.6)
+                      fontsize=legend_fontsize, labelcolor=t['ink_2'],
+                      handlelength=1.6)
         else:
             # Bottom RIGHT: bottom-left is where the pretrain shading and its
             # annotation live, and the note was landing on top of them.
             ax.annotate(note, xy=(0.985, 0.04), xycoords='axes fraction',
-                        color=t['muted'], fontsize=9, ha='right', zorder=5)
+                        color=t['muted'], fontsize=legend_fontsize, ha='right',
+                        zorder=5)
     elif legend_loc != 'none':
-        ax.legend(frameon=False, loc=legend_loc, fontsize=9,
+        ax.legend(frameon=False, loc=legend_loc, fontsize=legend_fontsize,
                   labelcolor=t['ink_2'], handlelength=1.6)
 
     fig.tight_layout()
@@ -462,6 +476,18 @@ def main():
                         'sweep whose curves all end high needs it out of the '
                         "way, usually upper right. 'none' drops the box "
                         'entirely and relies on the direct end-of-line labels.')
+    p.add_argument('--phase-note', default='on', choices=['on', 'off'],
+                   help="Whether to caption the pretrain boundary with "
+                        "'pretrain complete at N'. The dashed line and shading "
+                        'stay either way. Turn it off when the legend needs the '
+                        'upper-left corner, or in a set of figures where the '
+                        'caption repeats without adding anything.')
+    p.add_argument('--legend-fontsize', type=float, default=9.0,
+                   help='Point size of the legend text (default 9). The direct '
+                        'end-of-line labels scale with it, staying one point '
+                        'larger, so a figure keeps one type hierarchy. Set the '
+                        'same value across a set of figures or they will not '
+                        'look like a set.')
     p.add_argument('--direct-labels', default='on', choices=['on', 'off'],
                    help="Whether each curve is named beside its right-hand end. "
                         "'on' (default) suits a figure with no legend; 'off' "
@@ -595,7 +621,8 @@ def main():
     render(series_data, phase,
            args.metric, args.band, out, args.mode, title, args.ylabel, xlabel,
            args.legend_loc, overlay, args.overlay_metric,
-           args.direct_labels == 'on')
+           args.direct_labels == 'on', args.legend_fontsize,
+           args.phase_note == 'on')
 
 
 if __name__ == '__main__':
