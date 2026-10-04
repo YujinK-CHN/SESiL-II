@@ -103,16 +103,24 @@ def globa_score_matrix(agent_ids, states, core, args):
 
     --globa-with picks which type is the score:
 
+    NO TYPE IS A RELIABLE PREDICTOR, and the default is a design choice rather
+    than a tuned one. Over 980 merges on 35 seeds, none beat random partner
+    choice once the 40 tests run (10 rules x 4 thresholds) are accounted for:
+    the best single cell was E at p=0.020 against a Bonferroni threshold of
+    0.00125. Which type looks best also flips with the merge configuration --
+    D_plus under an averaged head, E under a label head, D_minus in neither --
+    so the ranking describes the setup, not the types. This is consistent with
+    the stronger result that couple-level mergeability is not reproducible at
+    all: the two children of one couple are anti-correlated (r = -0.39), so no
+    pair-level predictor can succeed.
+
         D_minus   the donor moved structure the base also moved, in the
                   OPPOSITE direction -- what specialising differently looks
-                  like. GLOBA calls it conflict because it is hard to merge;
-                  over 980 measured merges it was the only GLOBA statistic to
-                  beat random partner choice (22/35 seeds, p=0.032).
+                  like. GLOBA calls it conflict because it is hard to merge.
 
         E         the donor occupies cells the base does not, inside the base's
                   rows and columns -- GLOBA's "structural hole", the type its
-                  theory rates highest. Never beat random in four measured
-                  conditions; kept so the theory gets a fair test.
+                  theory rates highest.
 
     Both directions come from one decomposition, so this costs the same as the
     symmetric version: one SVD per analysable layer per pair, recomputed every

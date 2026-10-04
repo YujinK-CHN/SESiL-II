@@ -455,17 +455,22 @@ def _add_selection_config(parser):
     group.add_argument('--globa-with', type=str, default='D_minus',
                        choices=['D_minus', 'D_plus', 'E'],
                        help="GLOBA MODE ONLY. Which cell type scores a pair. "
+                            'NO TYPE IS A RELIABLE PREDICTOR. Measured over 980 '
+                            'merges on 35 seeds, no type beat random partner choice '
+                            'after correcting for the 40 tests run (10 rules x 4 '
+                            'thresholds): the best single cell was E at p=0.020, '
+                            'against a Bonferroni threshold of 0.00125. Which type '
+                            'looks best also changes completely with the merge '
+                            'configuration -- D_plus under an averaged head, E under '
+                            'a label head, D_minus in neither -- so the ranking is a '
+                            'property of the setup, not of the types. The default is '
+                            'therefore a design choice, not a tuned one. '
                             "'D_minus' is opposite-sign overlap -- the two parents "
                             'moved the same structure in opposite directions, which '
-                            'is what specialising differently looks like. Over 980 '
-                            'measured merges it is the only GLOBA statistic that '
-                            'beat random partner choice (22/35 seeds, p=0.032). '
+                            'is what specialising differently looks like. '
                             "'E' is GLOBA's structural hole, the type its own theory "
                             'rates highest; it is ~42% of the update energy but '
-                            'varies by only ~18% of its own size between pairs, and '
-                            'across four measured conditions it never beat random. '
-                            'Kept so the theory can be tested in evolution, not '
-                            'because the probe supported it. '
+                            'varies by only ~18% of its own size between pairs. '
                             "'D_plus' is same-sign overlap -- the donor moved "
                             'structure the base already moved, the same way, so it '
                             'brings nothing new. It is scored INVERTED (less '
