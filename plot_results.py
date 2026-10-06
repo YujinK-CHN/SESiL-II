@@ -380,7 +380,11 @@ def render(series_data, phase_starts, metric, band, out_path, mode, title,
     ax.set_xlabel(xlabel, color=t['ink_2'], fontsize=10)
     ax.set_ylabel(ylabel or METRIC_LABELS.get(metric, metric),
                   color=t['ink_2'], fontsize=10)
-    ax.set_title(title, color=t['ink'], fontsize=12, pad=14, loc='left')
+    # title=None means no title at all -- a figure whose caption carries the
+    # description, as in a paper. Distinct from an empty string, which would
+    # still reserve the pad above the axes.
+    if title:
+        ax.set_title(title, color=t['ink'], fontsize=12, pad=14, loc='left')
 
     ax.grid(axis='y', color=t['grid'], lw=0.9, zorder=0)
     ax.set_axisbelow(True)
@@ -453,7 +457,9 @@ def main():
     p.add_argument('--mode', default='light', choices=['light', 'dark'],
                    help='colour mode; dark is stepped for the dark surface, not flipped')
     p.add_argument('--title', default=None,
-                   help='figure title (default: derived from the directory name)')
+                   help="figure title. Default is derived from the directory "
+                        "name; 'none' draws no title at all, for a figure whose "
+                        'caption carries the description.')
     p.add_argument('--ylabel', default=None,
                    help='y-axis label (default: derived from --metric)')
     p.add_argument('--label', action='append', default=[], metavar='OLD=NEW',
@@ -611,7 +617,12 @@ def main():
         print_table(series_data, args.metric, args.band)
 
     out = args.out or os.path.join(args.root, f'{args.metric}.png')
-    title = args.title or f'Budget-matched comparison  ({os.path.basename(os.path.normpath(args.root))})'
+    if args.title and args.title.strip().lower() == 'none':
+        title = None
+    else:
+        title = args.title or (
+            f'Budget-matched comparison  '
+            f'({os.path.basename(os.path.normpath(args.root))})')
     xlabel = ('Training budget  (epoch-equivalents, backprop only)'
               if args.x_axis == 'budget' else
               f'Total compute  (epoch-equivalents, backward = {args.fwd_bwd_ratio:g}x forward)')
