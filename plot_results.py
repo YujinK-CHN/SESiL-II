@@ -301,7 +301,8 @@ def print_table(series_data, metric, band):
 def render(series_data, phase_starts, metric, band, out_path, mode, title,
            ylabel=None, xlabel='Training budget  (epoch-equivalents)',
            legend_loc='lower right', overlay=None, overlay_metric=None,
-           direct_labels=True, legend_fontsize=9.0, phase_note=True):
+           direct_labels=True, legend_fontsize=9.0, phase_note=True,
+           colours=None):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -337,7 +338,13 @@ def render(series_data, phase_starts, metric, band, out_path, mode, title,
     # ---- one line per series ------------------------------------------ #
     ends = []
     for i, (name, (x, centre, lo, hi, n_seeds, _interp)) in enumerate(series_data.items()):
-        colour = t['series'][i % len(t['series'])]
+        # A --colour override wins over the draw-order slot, so one series can
+        # be recoloured without reordering the others and changing every colour.
+        colour = (colours or {}).get(name)
+        if colour is None:
+            colour = t['series'][i % len(t['series'])]
+        elif not colour.startswith('#'):
+            colour = t['series'][int(colour) % len(t['series'])]
         if not np.allclose(lo, hi):
             ax.fill_between(x, lo, hi, color=colour, alpha=0.16, lw=0, zorder=2)
         ax.plot(x, centre, color=colour, lw=2, marker='o', ms=4.5,
@@ -507,6 +514,15 @@ def main():
                         '--metric oracle_overall --overlay-metric '
                         'best_agent_overall shows the single deployable agent '
                         'under the society-wide oracle.')
+    p.add_argument('--colour', '--color', action='append', default=[],
+                   dest='colour', metavar='LABEL=COLOUR',
+                   help='override one series colour, keyed on the label as it '
+                        'appears in the legend (i.e. after any --label rename). '
+                        'COLOUR is either a palette slot 0-7 or a hex value like '
+                        "'#1baf7a'. Repeatable. Without it a series takes the "
+                        'palette slot matching its draw order, so recolouring one '
+                        'series otherwise means reordering and moving every other '
+                        "series' colour too.")
     p.add_argument('--table', action='store_true',
                    help='also print the numbers behind every point')
     p.add_argument('--list-metrics', action='store_true',
@@ -629,11 +645,23 @@ def main():
     # The pretrain phase line is drawn in budget units, so it only lines up on
     # the budget axis; on the FLOPs axis its position would be wrong.
     phase = [] if args.x_axis == 'total-flops' else [r['phase_start'] for r in runs]
+    colours = {}
+    for pair in args.colour:
+        if '=' not in pair:
+            raise SystemExit(f'--colour expects LABEL=COLOUR, got {pair!r}')
+        label, value = pair.rsplit('=', 1)
+        label, value = label.strip(), value.strip()
+        if label not in series_data:
+            raise SystemExit(
+                f'--colour names a series that is not plotted: {label!r}\n'
+                f'plotted: {sorted(series_data)}')
+        colours[label] = value
+
     render(series_data, phase,
            args.metric, args.band, out, args.mode, title, args.ylabel, xlabel,
            args.legend_loc, overlay, args.overlay_metric,
            args.direct_labels == 'on', args.legend_fontsize,
-           args.phase_note == 'on')
+           args.phase_note == 'on', colours)
 
 
 if __name__ == '__main__':
