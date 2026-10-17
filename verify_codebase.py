@@ -522,6 +522,108 @@ def check_series_fields_are_logged(report):
                 'different conditions together')
 
 
+def check_mate_floor(report):
+    """--mate-floor must be inert at 0, must bite above it, and must grade on
+    ACCURACY rather than on the count the ranking uses.
+
+    Three things can go wrong and none of them raises: the gate can change
+    pairing while switched off, silently invalidating every earlier run; it can
+    be switched on and do nothing, so an experiment measures the default twice;
+    or it can grade on the ranking score, which under --cert-with count cannot
+    tell a mastered class from one held barely above the floor -- the exact
+    distinction the gate exists to make.
+    """
+    from types import SimpleNamespace
+    import random
+    import numpy as np
+    from sesil import selection
+
+    bad = []
+
+    def args_for(floor, mode='certificate'):
+        return SimpleNamespace(
+            mating_mode=mode, mating_rounds=15, cert_with='count',
+            weight_extra=1.0, weight_common=0.1,
+            hybrid_tolerance=0.15, mate_floor=floor)
+
+    # --- 1. inert at 0 ---------------------------------------------------- #
+    ids = [f'a{i}' for i in range(10)]
+    pop = [{'Model Name': a,
+            'Certificate': set(range(i % 4, i % 4 + 1 + (i % 3))),
+            'Strength': [1.0] * 10,
+            'Per Class': [0.6] * 10}
+           for i, a in enumerate(ids)]
+
+    for seed in range(5):
+        random.seed(seed)
+        np.random.seed(seed)
+        stats = {}
+        gated = selection.select_mates(pop, args_for(0.0), stats=stats)
+        plain = SimpleNamespace(
+            mating_mode='certificate', mating_rounds=15, cert_with='count',
+            weight_extra=1.0, weight_common=0.1, hybrid_tolerance=0.15)
+        random.seed(seed)
+        np.random.seed(seed)
+        ref = selection.select_mates(pop, plain)        # no attribute at all
+        if gated != ref:
+            bad.append(f'seed {seed}: floor=0 gave {gated}, ungated {ref}')
+        if stats.get('abstained') != 0:
+            bad.append(f'seed {seed}: floor=0 abstained '
+                       f'{stats.get("abstained")} times, expected 0')
+
+    # --- 2. a floor above every score refuses everyone -------------------- #
+    for seed in range(3):
+        random.seed(seed)
+        np.random.seed(seed)
+        stats = {}
+        pairs, loners = selection.select_mates(pop, args_for(99.0), stats=stats)
+        if pairs or len(loners) != len(ids):
+            bad.append(f'seed {seed}: floor=99 still paired {pairs}')
+        if stats['abstained'] == 0:
+            bad.append(f'seed {seed}: floor=99 recorded no abstentions')
+
+    # --- 3. graded on accuracy, not on the count used for ranking --------- #
+    # A holds {0,1}. B and C each add exactly ONE class, so under --cert-with
+    # count they are worth the same and ranking cannot separate them. B holds
+    # its extra class at 0.9, C at 0.1. A floor between the two must admit B
+    # and refuse C; a gate wired to the ranking score would keep both.
+    acc_hi = [0.9] * 10
+    acc_lo = [0.1] * 10
+    trio = [
+        {'Model Name': 'A', 'Certificate': {0, 1},
+         'Strength': [1.0] * 10, 'Per Class': [0.5] * 10},
+        {'Model Name': 'B', 'Certificate': {0, 1, 2},
+         'Strength': [1.0] * 10, 'Per Class': acc_hi},
+        {'Model Name': 'C', 'Certificate': {0, 1, 3},
+         'Strength': [1.0] * 10, 'Per Class': acc_lo},
+    ]
+    score = selection.build_score_matrix(trio, mode='certificate',
+                                         weight_extra=1.0, weight_common=0.1)
+    gate = selection.gate_matrix(trio)
+    if abs(score['A']['B'] - score['A']['C']) > 1e-12:
+        bad.append(f"ranking already separates B and C "
+                   f"({score['A']['B']} vs {score['A']['C']}) -- "
+                   f"fixture no longer tests what it claims")
+    if not gate['A']['B'] > gate['A']['C']:
+        bad.append(f"gate did not grade on accuracy: "
+                   f"A->B {gate['A']['B']:.3f} !> A->C {gate['A']['C']:.3f}")
+
+    # --- 4. the population invariant survives abstention ------------------ #
+    for floor in (0.0, 0.5, 1.0, 99.0):
+        for seed in range(5):
+            random.seed(seed)
+            np.random.seed(seed)
+            pairs, loners = selection.select_mates(pop, args_for(floor))
+            if 2 * len(pairs) + len(loners) != len(ids):
+                bad.append(f'floor={floor} seed={seed}: '
+                           f'{2 * len(pairs) + len(loners)} != {len(ids)}')
+
+    report('mate floor is inert at 0, binding above it, graded on accuracy',
+           not bad, bad,
+           'select_mates drops candidates whose accuracy-weighted value is '
+           'below --mate-floor')
+
+
 def check_lazy_globa_matches_eager(report):
     """Lazy GLOBA scoring must choose exactly what eager scoring chooses.
 
@@ -854,6 +956,7 @@ def main():
     check_generation_pruning(report)
     check_series_fields_are_logged(report)
     check_lazy_globa_matches_eager(report)
+    check_mate_floor(report)
     check_mating_inputs(report)
     check_val_routed_metric(report)
     check_val_routed_is_wired(report)

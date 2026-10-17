@@ -602,8 +602,10 @@ def run_evolution(args, budget, data, logger, evaluator):
             # selection silently uses whatever it was handed instead of the
             # scoring rule the run asked for.
             scores, tiebreak = mating_inputs(args, pair_scores)
+            mate_stats = {}
             pairs, loners = select_mates(population_info, args,
-                                         scores=scores, tiebreak=tiebreak)
+                                         scores=scores, tiebreak=tiebreak,
+                                         stats=mate_stats)
             print(f'[gen {generation}] {len(pairs)} couples, {len(loners)} loners')
 
             # How much GLOBA work the tie-break actually needed. Logged because
@@ -624,6 +626,12 @@ def run_evolution(args, budget, data, logger, evaluator):
                 'couples': [list(p) for p in pairs],
                 'loners': loners,
                 'globa_pairs_scored': scored,
+                # Separates refusal under --mate-floor from ordinary
+                # non-reciprocation: both leave an agent unpaired, and only
+                # this distinguishes them after the fact.
+                'mate_floor': args.mate_floor,
+                'abstained': mate_stats.get('abstained', 0),      # agent-rounds
+                'abstainers': mate_stats.get('abstainers', 0),    # agents
             })
 
             offspring = breed(pairs, loners, population_info, models, raw_config,

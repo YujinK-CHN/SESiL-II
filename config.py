@@ -544,7 +544,36 @@ def _add_selection_config(parser):
                             'is what 100 amounted to. '
                             'Replaces --max-retries, which meant the same thing for '
                             'the sampled modes only.')
-
+    group.add_argument('--mate-floor', type=float, default=0.0,
+                       help='CERTIFICATE AND HYBRID MODES ONLY. Minimum value a '
+                            'candidate must offer before an agent will mate with '
+                            'it at all. Candidates below it are dropped from that '
+                            "agent's options, and an agent left with none abstains "
+                            'and becomes a loner, earning an exploration slot '
+                            'instead of a redundant child. Exists because the pool '
+                            'thins as couples leave, so a late round offers only '
+                            'leftovers and an agent otherwise takes one however '
+                            'little it brings. '
+                            'The gate value uses the same shape as the mating '
+                            'score -- exclusive classes at --weight-extra, shared '
+                            'ones at --weight-common -- but is ALWAYS weighted by '
+                            "the candidate's per-class accuracy, even under "
+                            '--cert-with count. Counting says who an agent '
+                            'prefers; accuracy says whether anyone is worth it. A '
+                            'class held barely above --certify-floor counts the '
+                            'same as a mastered one when ranking, and the child '
+                            'usually loses it at the next certification, which is '
+                            'the pairing this is meant to stop. '
+                            '0 (default) admits every candidate and reproduces the '
+                            'ungated behaviour exactly. '
+                            'NOTE the shared term scales with certificate size: '
+                            'two agents overlapping on 16 classes at accuracy 0.5 '
+                            'already score 0.8 before any new class, so a floor '
+                            'below that is inert. Set it from the observed score '
+                            'distribution, and expect it to weaken as '
+                            'certificates grow. Raising it makes more loners, so '
+                            'compare only against arms matched on pairs per '
+                            'generation.')
 
 def _add_subset_config(parser):
     parser.add_argument('--subset-mode', type=str, default='random',
@@ -798,6 +827,18 @@ def validate(args):
             f'Conflicting settings: {" and ".join(needs_core)} needs a phase-A '
             f'backbone, but --phase-a-ratio is {args.phase_a_ratio}, so phase A '
             f'never runs.')
+
+    if args.mate_floor < 0:
+        raise SystemExit(
+            f'--mate-floor must be >= 0, got {args.mate_floor}.')
+
+    if args.mate_floor > 0 and args.mating_mode not in ('certificate', 'hybrid'):
+        raise SystemExit(
+            f'Conflicting settings: --mate-floor {args.mate_floor} with '
+            f'--mating-mode {args.mating_mode}.\n'
+            f'The gate is a statement about certificate value, so it only means '
+            f'something where candidates are ranked on certificates. Use '
+            f'--mating-mode certificate or hybrid, or drop --mate-floor.')
 
     if args.mating_mode == 'hybrid' and args.cert_with == 'accuracy':
         raise SystemExit(

@@ -288,6 +288,45 @@ def build_score_matrix(population_info, mode='certificate', **kwargs):
     return scores
 
 
+def gate_matrix(population_info, weight_extra=1.0, weight_common=0.1):
+    """gate[a][b] = how much B is WORTH to A, in accuracy units.
+
+    Same shape as the mating score, but always weighted by the candidate's
+    measured per-class accuracy, whatever --cert-with is set to. The two answer
+    different questions and only one of them needs a common currency:
+
+        the score  ranks candidates -- who does A prefer
+        the gate   admits them      -- is anyone worth mating with at all
+
+    Under --cert-with count a class held barely above --certify-floor ranks
+    exactly like a mastered one, because the offspring inherits the union of
+    the parents' certificate SETS and accuracy never enters that union. But the
+    child has to re-earn the certificate at the next certification, and a
+    barely-held class is usually lost -- so counting is the right basis for
+    preference and the wrong one for deciding whether the pairing is worth
+    making. Hence accuracy here regardless.
+
+    Shared classes are included, at weight_common, because the question is
+    whether B is worth mating with and not merely whether B is complementary:
+    merging two agents trained independently on the same classes consolidates
+    them. weight_common already states what that is worth relative to a new
+    class, and using a different trade-off here would assert a second,
+    contradictory value function.
+    """
+    gate = {}
+    for agent_a in population_info:
+        cert_a = set(agent_a['Certificate'])
+        gate[agent_a['Model Name']] = {}
+        for agent_b in population_info:
+            if agent_a is agent_b:
+                continue
+            gate[agent_a['Model Name']][agent_b['Model Name']] = mating_score(
+                cert_a, set(agent_b['Certificate']), agent_b['Per Class'],
+                weight_extra=weight_extra, weight_common=weight_common,
+            )
+    return gate
+
+
 def _score_kwargs(args):
     """Scoring parameters for the configured mode.
 
@@ -363,7 +402,8 @@ def probabilistic_choice(score_dict):
 # Strategy
 # --------------------------------------------------------------------------- #
 
-def select_mates(population_info, args, scores=None, tiebreak=None):
+def select_mates(population_info, args, scores=None, tiebreak=None,
+                 stats=None):
     """Mutual mate choice, in rounds.
 
     One round: every agent still in the pool picks a partner from the agents
@@ -388,6 +428,13 @@ def select_mates(population_info, args, scores=None, tiebreak=None):
     `scores` may be supplied precomputed -- GLOBA mode does that, since its
     matrix needs the agents' weights and the phase-A backbone.
 
+    `stats`, if given, is a dict this fills with diagnostics -- currently
+    'abstained', the number of agent-ROUNDS in which --mate-floor left nobody
+    acceptable, and 'abstainers', the number of distinct agents that happened
+    to. The second is the one to read: abstention is permanent, so the first
+    multiplies each refusing agent by the rounds remaining. It is an out-parameter rather than a third return value
+    so existing two-tuple callers keep working.
+
     Returns (pairs, loners).
     """
     if scores is None:
@@ -399,8 +446,28 @@ def select_mates(population_info, args, scores=None, tiebreak=None):
     agents = list(scores.keys())
     n_agents = len(agents)
 
+    # Acceptability gate. The pool thins as couples leave, so a late round
+    # offers only leftovers and an agent otherwise takes one however little it
+    # brings. Below --mate-floor a candidate is not considered at all; an agent
+    # left with nobody abstains and becomes a loner, earning an exploration
+    # slot instead of a redundant child.
+    #
+    # Empty dict when the floor is 0, which makes the filter below a no-op --
+    # the ungated path is bit-for-bit unchanged.
+    gate = {}
+    floor = getattr(args, 'mate_floor', 0.0)
+    if floor > 0 and args.mating_mode in ('certificate', 'hybrid'):
+        gate = gate_matrix(population_info)
+
     pairs = []
     paired = set()
+    # Two counters, because one is misleading on its own. Abstention is
+    # permanent -- the pool only shrinks, so an agent's acceptable set never
+    # grows back -- and the per-round tally therefore multiplies each refusing
+    # agent by the rounds remaining. 'abstained' reads as agents unless the
+    # distinct count sits beside it.
+    abstained = 0
+    abstainers = set()
 
     for _ in range(max(args.mating_rounds, 1)):
         pool = [m for m in agents if m not in paired]
@@ -409,7 +476,17 @@ def select_mates(population_info, args, scores=None, tiebreak=None):
 
         choices = {}
         for m in pool:
-            options = {k: v for k, v in scores[m].items() if k not in paired}
+            row_gate = gate.get(m)
+            options = {k: v for k, v in scores[m].items()
+                       if k not in paired
+                       and (row_gate is None or row_gate.get(k, 0.0) >= floor)}
+            if not options:
+                # No acceptable partner left. best_choice and
+                # probabilistic_choice both return None here anyway; counting
+                # it explicitly is what separates refusal from ordinary
+                # non-reciprocation when reading the logs.
+                abstained += 1
+                abstainers.add(m)
             if hybrid:
                 # The row is passed WHOLE, not filtered into a dict. Filtering
                 # would read every entry, and with a lazy GLOBA scorer reading
@@ -437,6 +514,10 @@ def select_mates(population_info, args, scores=None, tiebreak=None):
         # nobody, every later round sees the same pool and the same rankings.
         if deterministic and not new_pairs:
             break
+
+    if stats is not None:
+        stats['abstained'] = abstained              # agent-rounds
+        stats['abstainers'] = len(abstainers)       # distinct agents
 
     loners = [m for m in agents if m not in paired]
 
