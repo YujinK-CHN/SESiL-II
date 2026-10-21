@@ -155,8 +155,11 @@ def train(samples, hidden=16, epochs=400, lr=0.01, seed=0, verbose=True):
         loss.backward()
         opt.step()
         if verbose and (epoch % max(1, epochs // 5) == 0 or epoch == epochs - 1):
-            history.append((epoch, float(loss)))
-            print(f'[phase c] epoch {epoch:4d}  ranking loss {float(loss):.4f}')
+            # .detach(): the graph is still attached at this point, and
+            # float() on a grad-tracking tensor warns.
+            value = float(loss.detach())
+            history.append((epoch, value))
+            print(f'[phase c] epoch {epoch:4d}  ranking loss {value:.4f}')
     return net, history
 
 
