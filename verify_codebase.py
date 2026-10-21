@@ -522,6 +522,92 @@ def check_series_fields_are_logged(report):
                 'different conditions together')
 
 
+def check_globa_mate_floor(report):
+    """The GLOBA gate must measure MAGNITUDE, not composition.
+
+    The failure this exists to catch is subtle: the GLOBA score is a set of
+    shares normalised by the donor's own total, so a donor that barely moved
+    and one that moved a great deal can score identically. Gating on the shares
+    would therefore refuse nobody for bringing too little -- which is the only
+    thing the gate is for. The novelty value must separate two donors that have
+    the SAME composition and different magnitudes.
+    """
+    import numpy as np
+    import torch
+    from types import SimpleNamespace
+    from sesil import selection
+    from sesil.globa_stats import TYPES, directional_pair_stats
+
+    bad = []
+
+    # A base, and two donors with identical direction but different scale.
+    torch.manual_seed(0)
+    core = {'layer.weight': torch.zeros(8, 8, dtype=torch.float64)}
+    base = {'layer.weight': torch.randn(8, 8, dtype=torch.float64)}
+    small = {'layer.weight': torch.randn(8, 8, dtype=torch.float64) * 0.01}
+    big = {'layer.weight': small['layer.weight'] * 100.0}
+
+    shares_small, _ = directional_pair_stats(
+        base, small, core, eta=1.0, svd_energy=1.0, basis_energy=1.0,
+        head_prefix=None, weighting='energy')
+    shares_big, _ = directional_pair_stats(
+        base, big, core, eta=1.0, svd_energy=1.0, basis_energy=1.0,
+        head_prefix=None, weighting='energy')
+
+    # NOT asserting the shares are identical under scaling. They are close but
+    # not exact: the joint basis is rebuilt from both parents' singular
+    # vectors, and LAPACK's sign convention can flip on a scaled input, which
+    # moves a little energy between D_plus and D_minus. That is numerical, and
+    # it is beside the point -- what matters is that the shares stay bounded
+    # while the novelty moves with the donor's actual size.
+    drift = max(abs(shares_small[t] - shares_big[t]) for t in TYPES)
+    if drift > 0.5:
+        bad.append(f'scaling a donor moved its shares by {drift:.2f} -- too '
+                   f'much to call this the same composition')
+    if not shares_big['_novel'] > shares_small['_novel'] * 10:
+        bad.append(f"novelty did not scale with donor magnitude: "
+                   f"{shares_small['_novel']:.3e} vs {shares_big['_novel']:.3e}")
+
+    # The shares must still be a clean distribution over the six types, with
+    # the magnitude carried separately rather than mixed into them.
+    total = sum(shares_big[t] for t in TYPES)
+    if abs(total - 1.0) > 1e-6:
+        bad.append(f'type shares no longer sum to 1 ({total:.6f}) -- the '
+                   f'novelty value has leaked into them')
+
+    # GLOBA mating with a floor must take the gate from the caller, never
+    # silently fall back to certificates, which are a different scale.
+    ids = ['a', 'b', 'c', 'd']
+    pop = [{'Model Name': i, 'Certificate': {0, 1}, 'Strength': [1.0] * 4,
+            'Per Class': [0.5] * 4} for i in ids]
+    scores = {a: {b: 1.0 for b in ids if b != a} for a in ids}
+    args = SimpleNamespace(mating_mode='globa', mating_rounds=5,
+                           weight_extra=1.0, weight_common=0.1,
+                           hybrid_tolerance=0.15, mate_floor=0.5)
+    try:
+        selection.select_mates(pop, args, scores=scores)
+        bad.append('GLOBA mating with a floor accepted a certificate gate '
+                   'instead of demanding one from the caller')
+    except ValueError:
+        pass
+
+    # With a gate supplied, it must bite.
+    gate = {a: {b: (9.0 if b == 'b' else 0.0) for b in ids if b != a}
+            for a in ids}
+    st = {}
+    pairs, loners = selection.select_mates(pop, args, scores=scores,
+                                           gate=gate, stats=st)
+    if any('b' not in pair for pair in pairs):
+        bad.append(f'gate ignored: paired agents below the floor {pairs}')
+    if 2 * len(pairs) + len(loners) != len(ids):
+        bad.append('population invariant broken under a GLOBA gate')
+
+    report('globa mate floor measures donor magnitude, not shares',
+           not bad, bad,
+           'shares are normalised; only the unnormalised energy can say how '
+           'much a partner brings')
+
+
 def check_learned_mating(report):
     """--globa-with learned must be a real alternative, not a silent no-op.
 
@@ -1043,6 +1129,7 @@ def main():
     check_lazy_globa_matches_eager(report)
     check_mate_floor(report)
     check_learned_mating(report)
+    check_globa_mate_floor(report)
     check_mating_inputs(report)
     check_val_routed_metric(report)
     check_val_routed_is_wired(report)

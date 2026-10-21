@@ -353,13 +353,26 @@ def directional_pair_stats(sd_a, sd_b, core, eta=0.80, svd_energy=0.90,
             masks = classify_directional(C_base, C_donor)
             energy = C_donor * C_donor
             total = float(energy.sum())
-            return {t: (float((energy * masks[t]).sum()) / total if total > 0 else 0.0)
+            frac = {t: (float((energy * masks[t]).sum()) / total if total > 0
+                        else 0.0)
                     for t in TYPES}
+            # UNNORMALISED counterpart, kept because the shares cannot express
+            # magnitude: they divide by the donor's own total, so a donor that
+            # barely moved and one that moved a great deal look identical. The
+            # part outside D_plus is the donor's energy that is NOT same-sign
+            # duplication of what the base already did -- "how much structure
+            # does this partner bring that I do not already have".
+            novel = float((energy * ~masks['D_plus']).sum())
+            return frac, novel
 
+        frac_ab, novel_ab = shares(Ca, Cb)
+        frac_ba, novel_ba = shares(Cb, Ca)
         per_layer[name] = {
             # a_sees_b: B is the donor, typed against A.
-            'a_sees_b': shares(Ca, Cb),
-            'b_sees_a': shares(Cb, Ca),
+            'a_sees_b': frac_ab,
+            'b_sees_a': frac_ba,
+            'novel_a_sees_b': novel_ab,
+            'novel_b_sees_a': novel_ba,
             'weight': float(tau_a.norm()) ** 2 + float(tau_b.norm()) ** 2,
         }
 
@@ -382,4 +395,14 @@ def directional_pair_stats(sd_a, sd_b, core, eta=0.80, svd_energy=0.90,
         return {t: float(sum(w[n] * s[key][t] for n, s in per_layer.items()) / total_w)
                 for t in TYPES}
 
-    return collapse('a_sees_b'), collapse('b_sees_a')
+    def novelty(key):
+        # SUMMED across layers, not averaged: this is a magnitude, and the
+        # whole point of it is that a donor which moved more brings more.
+        # Dividing by the layer weights would normalise exactly the thing the
+        # shares already normalise away.
+        return float(sum(s[key] for s in per_layer.values()))
+
+    ab, ba = collapse('a_sees_b'), collapse('b_sees_a')
+    ab['_novel'] = novelty('novel_a_sees_b')
+    ba['_novel'] = novelty('novel_b_sees_a')
+    return ab, ba

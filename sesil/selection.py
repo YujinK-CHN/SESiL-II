@@ -83,7 +83,8 @@ def mating_score(cert_a, cert_b, strength_b,
     return score
 
 
-def globa_score_matrix(agent_ids, states, core, args, coeffs=None):
+def globa_score_matrix(agent_ids, states, core, args, coeffs=None,
+                       novelty=None):
     """Directional pair scores from the GLOBA decomposition.
 
     scores[a][b] is what B brings A: B's cells typed against A's occupancy,
@@ -141,6 +142,11 @@ def globa_score_matrix(agent_ids, states, core, args, coeffs=None):
             )
             scores[a][b] = _globa_value(a_sees_b, args.globa_with, coeffs)
             scores[b][a] = _globa_value(b_sees_a, args.globa_with, coeffs)
+            if novelty is not None:
+                # Magnitude, for --mate-floor. The scores above are shares and
+                # cannot express it: they divide by the donor's own total.
+                novelty.setdefault(a, {})[b] = float(a_sees_b.get('_novel', 0.0))
+                novelty.setdefault(b, {})[a] = float(b_sees_a.get('_novel', 0.0))
     return scores
 
 
@@ -176,6 +182,7 @@ class LazyGlobaScores:
         # for every named cell type, which ignores it.
         self._coeffs = coeffs
         self._cache = {a: {} for a in self._ids}
+        self.novelty = {a: {} for a in self._ids}
         self.computed = 0                    # pairs actually decomposed
 
     def __getitem__(self, agent):
@@ -211,6 +218,11 @@ class LazyGlobaScores:
                                          self._coeffs)
         self._cache[b][a] = _globa_value(b_sees_a, self._args.globa_with,
                                          self._coeffs)
+        # .get: a caller that supplies its own decomposition -- the tests do
+        # -- has no reason to carry the magnitude, and nothing reads it unless
+        # --mate-floor is on under GLOBA ranking.
+        self.novelty[a][b] = float(a_sees_b.get('_novel', 0.0))
+        self.novelty[b][a] = float(b_sees_a.get('_novel', 0.0))
         self.computed += 1
         return self._cache[a][b]
 
@@ -423,7 +435,7 @@ def probabilistic_choice(score_dict):
 # --------------------------------------------------------------------------- #
 
 def select_mates(population_info, args, scores=None, tiebreak=None,
-                 stats=None):
+                 stats=None, gate=None):
     """Mutual mate choice, in rounds.
 
     One round: every agent still in the pool picks a partner from the agents
@@ -474,10 +486,22 @@ def select_mates(population_info, args, scores=None, tiebreak=None,
     #
     # Empty dict when the floor is 0, which makes the filter below a no-op --
     # the ungated path is bit-for-bit unchanged.
-    gate = {}
     floor = getattr(args, 'mate_floor', 0.0)
-    if floor > 0 and args.mating_mode in ('certificate', 'hybrid'):
-        gate = gate_matrix(population_info)
+    if floor <= 0:
+        gate = {}
+    elif gate is None:
+        # Certificate ranking: the gate is certificate value, built here.
+        # GLOBA ranking: the caller supplies donor novelty instead, because it
+        # comes out of the pair decomposition and cannot be rebuilt from
+        # population_info. Same question either way -- is this partner worth
+        # mating with -- measured in whatever currency the mode has.
+        if args.mating_mode in ('certificate', 'hybrid'):
+            gate = gate_matrix(population_info)
+        else:
+            raise ValueError(
+                f'--mate-floor {floor} under --mating-mode '
+                f'{args.mating_mode} needs a gate from the caller; '
+                f'selection cannot build one from certificates here.')
 
     pairs = []
     paired = set()

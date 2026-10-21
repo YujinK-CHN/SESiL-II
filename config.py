@@ -568,7 +568,7 @@ def _add_selection_config(parser):
                             'Replaces --max-retries, which meant the same thing for '
                             'the sampled modes only.')
     group.add_argument('--mate-floor', type=float, default=0.0,
-                       help='CERTIFICATE AND HYBRID MODES ONLY. Minimum value a '
+                       help='Minimum value a '
                             'candidate must offer before an agent will mate with '
                             'it at all. Candidates below it are dropped from that '
                             "agent's options, and an agent left with none abstains "
@@ -577,9 +577,15 @@ def _add_selection_config(parser):
                             'thins as couples leave, so a late round offers only '
                             'leftovers and an agent otherwise takes one however '
                             'little it brings. '
-                            'The gate value uses the same shape as the mating '
-                            'score -- exclusive classes at --weight-extra, shared '
-                            'ones at --weight-common -- but is ALWAYS weighted by '
+                            'WHAT IS MEASURED DEPENDS ON THE MATING MODE, '
+                            'because the question -- is this partner worth it '
+                            '-- has a different currency in each, and the two '
+                            'scales are NOT comparable: a floor tuned for one '
+                            'mode means nothing in the other. '
+                            'Under CERTIFICATE and HYBRID ranking the gate has '
+                            'the same shape as the mating score -- exclusive '
+                            'classes at --weight-extra, shared ones at '
+                            '--weight-common -- but is ALWAYS weighted by '
                             "the candidate's per-class accuracy, even under "
                             '--cert-with count. Counting says who an agent '
                             'prefers; accuracy says whether anyone is worth it. A '
@@ -587,6 +593,16 @@ def _add_selection_config(parser):
                             'same as a mastered one when ranking, and the child '
                             'usually loses it at the next certification, which is '
                             'the pairing this is meant to stop. '
+                            'Under GLOBA ranking the gate is instead the '
+                            "donor's UNNORMALISED update energy outside "
+                            'D_plus: how much structure the partner brings '
+                            'that is not same-sign duplication of what the '
+                            'base already did. Unnormalised because the GLOBA '
+                            'score is a set of SHARES, divided by the donor '
+                            'total, so a donor that barely moved and one that '
+                            'moved a great deal score identically -- the '
+                            'shares say what kind of structure a partner '
+                            'brings, only the energy says how much. '
                             '0 (default) admits every candidate and reproduces the '
                             'ungated behaviour exactly. '
                             'NOTE the shared term scales with certificate size: '
@@ -867,13 +883,13 @@ def validate(args):
         raise SystemExit(
             f'--mate-floor must be >= 0, got {args.mate_floor}.')
 
-    if args.mate_floor > 0 and args.mating_mode not in ('certificate', 'hybrid'):
+    if args.mate_floor > 0 and args.mating_mode == 'random':
         raise SystemExit(
             f'Conflicting settings: --mate-floor {args.mate_floor} with '
-            f'--mating-mode {args.mating_mode}.\n'
-            f'The gate is a statement about certificate value, so it only means '
-            f'something where candidates are ranked on certificates. Use '
-            f'--mating-mode certificate or hybrid, or drop --mate-floor.')
+            f'--mating-mode random.\n'
+            f'Random mating is the control arm: it scores every candidate '
+            f'alike on purpose, so gating it would make it a different '
+            f'method.')
 
     if args.mating_mode == 'hybrid' and args.cert_with == 'accuracy':
         raise SystemExit(

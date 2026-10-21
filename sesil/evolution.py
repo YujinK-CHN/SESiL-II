@@ -588,6 +588,10 @@ def run_evolution(args, budget, data, logger, evaluator):
             # GLOBA scoring needs the agents' weights and the shared
             # backbone, neither of which selection can reach on its own.
             pair_scores = None
+            # Certificate and hybrid ranking leave this None and selection
+            # builds the certificate gate itself; GLOBA ranking fills it with
+            # donor novelty, which only the decomposition can provide.
+            mate_gate = None
             if globa_core is not None and mating_needs_globa(args):
                 head_prefix = classifier_name(models[0]) + '.'
                 args.head_prefix = head_prefix
@@ -620,11 +624,23 @@ def run_evolution(args, budget, data, logger, evaluator):
                     # read, so the scorer decomposes a pair when asked.
                     pair_scores = LazyGlobaScores(ids, states, globa_core,
                                                   args, coeffs=coeffs)
+                    # Lazy by design, so the novelty matrix fills in only for
+                    # the pairs the tie-break actually looks at. Hybrid ranks
+                    # on certificates, so its gate is the certificate one and
+                    # selection builds it itself.
+                    mate_gate = None
                 else:
                     # --mating-mode globa ranks EVERY candidate by this score,
                     # so every pair is genuinely needed and eager is no slower.
+                    novelty = {} if args.mate_floor > 0 else None
                     pair_scores = globa_score_matrix(ids, states, globa_core,
-                                                     args, coeffs=coeffs)
+                                                     args, coeffs=coeffs,
+                                                     novelty=novelty)
+                    # GLOBA ranks on normalised shares, which say nothing about
+                    # HOW MUCH a donor brings. The gate uses the unnormalised
+                    # energy outside D_plus instead: structure the base does not
+                    # already have.
+                    mate_gate = novelty
                     print(f'[gen {generation}] globa pair scoring '
                           f'({args.globa_with}) took {time.time() - t0:.1f}s')
                 # NOTE: `states` is captured by the lazy scorer, so it must not
@@ -640,7 +656,8 @@ def run_evolution(args, budget, data, logger, evaluator):
             mate_stats = {}
             pairs, loners = select_mates(population_info, args,
                                          scores=scores, tiebreak=tiebreak,
-                                         stats=mate_stats)
+                                         stats=mate_stats,
+                                         gate=mate_gate)
             print(f'[gen {generation}] {len(pairs)} couples, {len(loners)} loners')
 
             # How much GLOBA work the tie-break actually needed. Logged because
