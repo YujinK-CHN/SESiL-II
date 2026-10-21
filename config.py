@@ -453,7 +453,7 @@ def _add_selection_config(parser):
                             'without ever overriding it. Also needs '
                             '--pretrain-mode ssl.')
     group.add_argument('--globa-with', type=str, default='D_minus',
-                       choices=['D_minus', 'D_plus', 'E'],
+                       choices=['D_minus', 'D_plus', 'E', 'learned'],
                        help="GLOBA MODE ONLY. Which cell type scores a pair. "
                             'NO TYPE IS A RELIABLE PREDICTOR. Measured over 980 '
                             'merges on 35 seeds, no type beat random partner choice '
@@ -529,6 +529,29 @@ def _add_selection_config(parser):
                             'still decides on the certificate alone. Raise it to '
                             'hand more of the decision to GLOBA, lower it to keep '
                             'the certificate in charge.')
+    group.add_argument('--phase-c-pairs', type=int, default=60,
+                       help='LEARNED MATING ONLY. How many unordered pairs '
+                            'phase C measures before fitting. Both directions '
+                            'of each are kept -- one decomposition yields both '
+                            '-- so this many pairs gives twice as many training '
+                            'samples. The full set for 20 agents is 190 pairs; '
+                            'the default samples under a third because every '
+                            'pair costs a merge, a BatchNorm recalibration and '
+                            'an evaluation. Forward-only, so it spends no '
+                            'backpropagation budget, but it is real wall-clock '
+                            'time. 0 means every pair.')
+    group.add_argument('--phase-c-epochs', type=int, default=400,
+                       help='LEARNED MATING ONLY. Optimisation steps for the '
+                            'mating function. Full-batch over the measured '
+                            'pairs, so a step is cheap.')
+    group.add_argument('--phase-c-hidden', type=int, default=16,
+                       help='LEARNED MATING ONLY. Hidden width of the mating '
+                            'function. Small on purpose: it maps a six-number '
+                            'context to six coefficients from a few dozen '
+                            'measured merges.')
+    group.add_argument('--phase-c-lr', type=float, default=0.01,
+                       help='LEARNED MATING ONLY. Adam learning rate for the '
+                            'mating function.')
     group.add_argument('--mating-rounds', type=int, default=15,
                        help='How many rounds of mate choice to run. Each round: '
                             'everyone still unpaired picks a partner from those '
@@ -827,6 +850,18 @@ def validate(args):
             f'Conflicting settings: {" and ".join(needs_core)} needs a phase-A '
             f'backbone, but --phase-a-ratio is {args.phase_a_ratio}, so phase A '
             f'never runs.')
+
+    if args.globa_with == 'learned' and args.mating_mode not in ('globa', 'hybrid'):
+        raise SystemExit(
+            f'Conflicting settings: --globa-with learned with --mating-mode '
+            f'{args.mating_mode}.\n'
+            f'The learned function scores GLOBA cell types, so it only runs '
+            f'where mating consults them. Use --mating-mode globa or hybrid.')
+
+    if args.globa_with == 'learned' and args.phase_c_pairs < 0:
+        raise SystemExit(
+            f'--phase-c-pairs must be >= 0, got {args.phase_c_pairs} '
+            f'(0 means every pair).')
 
     if args.mate_floor < 0:
         raise SystemExit(

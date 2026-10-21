@@ -522,6 +522,91 @@ def check_series_fields_are_logged(report):
                 'different conditions together')
 
 
+def check_learned_mating(report):
+    """--globa-with learned must be a real alternative, not a silent no-op.
+
+    Four ways it could be wrong without raising: the named cell types could
+    start going through the learned path (changing every existing arm); the
+    learned path could collapse to scoring every candidate alike, which ranks
+    arbitrarily while looking fine; the saved function could be loadable after
+    the cell types or context fields changed underneath it, applying
+    coefficients to the wrong numbers; and scores could go negative, which the
+    sampled mating paths use as weights.
+    """
+    import numpy as np
+    from types import SimpleNamespace
+    from sesil import mating_fn, selection
+    from sesil.globa_stats import TYPES
+
+    bad = []
+
+    # 1. Named types must not touch the learned path at all.
+    shares = {t: 1.0 / len(TYPES) for t in TYPES}
+    for kind in ('D_minus', 'E'):
+        got = selection._globa_value(shares, kind)
+        if abs(got - shares[kind]) > 1e-12:
+            bad.append(f'{kind} scored {got}, expected {shares[kind]}')
+    if abs(selection._globa_value(shares, 'D_plus') - (1 - shares['D_plus'])) > 1e-12:
+        bad.append('D_plus is no longer inverted')
+
+    # 2. learned without coefficients must refuse rather than default.
+    try:
+        selection._globa_value(shares, 'learned')
+        bad.append('learned scored without coefficients instead of raising')
+    except ValueError:
+        pass
+
+    # 3. The fitted rule must actually rank: train on a population whose
+    #    outcome is a known function of the shares and check it recovers the
+    #    ordering, and that the scores are not all equal.
+    rng = np.random.default_rng(0)
+    truth = np.zeros(len(TYPES))
+    truth[TYPES.index('E')] = 1.0
+    truth[TYPES.index('D_minus')] = -1.0
+    S = rng.dirichlet(np.ones(len(TYPES)) * 2.0, size=40)
+    y = S @ truth
+    ctx = np.array([0.4, 0.1, 12.0, 0.6, 1.0, 1.0])
+    net, _ = mating_fn.train([{'context': ctx, 'shares': S, 'outcome': y}],
+                             epochs=300, verbose=False)
+    coeffs = net.coefficients(ctx)
+    scores = np.array([mating_fn.score_from_coefficients(dict(zip(TYPES, row)),
+                                                         coeffs) for row in S])
+    if scores.std() < 1e-6:
+        bad.append('learned scores collapsed to a constant -- ranks arbitrarily')
+    rho = np.corrcoef(np.argsort(np.argsort(scores)),
+                      np.argsort(np.argsort(y)))[0, 1]
+    if rho < 0.8:
+        bad.append(f'learned rule failed to recover a planted ordering '
+                   f'(rank correlation {rho:.2f}, expected >= 0.8)')
+    if scores.min() < 0.0 or scores.max() > 1.0:
+        bad.append(f'learned scores leave [0,1] ({scores.min():.3f}, '
+                   f'{scores.max():.3f}) -- sampled mating uses them as weights')
+
+    # 4. Save/load must refuse a function trained on different types.
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'mating_fn.pt')
+        mating_fn.save(net, path, meta={'coefficients': coeffs})
+        again = mating_fn.load(path)
+        back = again.coefficients(ctx)
+        if any(abs(back[t] - coeffs[t]) > 1e-6 for t in TYPES):
+            bad.append('coefficients changed across save/load')
+
+        import torch as _torch
+        blob = _torch.load(path, map_location='cpu', weights_only=False)
+        blob['types'] = list(TYPES)[::-1]
+        _torch.save(blob, path)
+        try:
+            mating_fn.load(path)
+            bad.append('loaded a function whose cell-type order does not match')
+        except ValueError:
+            pass
+
+    report('learned mating fits, ranks, round-trips and stays in [0,1]',
+           not bad, bad,
+           '--globa-with learned scores every type by fitted coefficients')
+
+
 def check_mate_floor(report):
     """--mate-floor must be inert at 0, must bite above it, and must grade on
     ACCURACY rather than on the count the ranking uses.
@@ -957,6 +1042,7 @@ def main():
     check_series_fields_are_logged(report)
     check_lazy_globa_matches_eager(report)
     check_mate_floor(report)
+    check_learned_mating(report)
     check_mating_inputs(report)
     check_val_routed_metric(report)
     check_val_routed_is_wired(report)

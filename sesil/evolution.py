@@ -530,6 +530,22 @@ def run_evolution(args, budget, data, logger, evaluator):
     raw_config = build_raw_config(args)
     globa_core = _load_globa_core(args)
 
+    # The learned mating function, fitted by phase C before evolution began.
+    # Loaded once: the network is fixed for the run, and only the coefficients
+    # it emits move, as the population's context moves.
+    mating_net = None
+    if args.globa_with == 'learned':
+        from sesil import mating_fn
+        path = mating_fn.default_path(args)
+        if not os.path.exists(path):
+            raise SystemExit(
+                f'--globa-with learned, but no fitted mating function at '
+                f'{path}. Phase C writes it before evolution starts; a run '
+                f'resumed with --start-gen past phase C needs the file from '
+                f'the original run directory.')
+        mating_net = mating_fn.load(path)
+        print(f'[evolution] learned mating function loaded from {path}')
+
     generation = args.start_gen
     completed = 0
 
@@ -580,16 +596,35 @@ def run_evolution(args, budget, data, logger, evaluator):
                           for info, m in zip(population_info, models)}
                 ids = [info['Model Name'] for info in population_info]
                 t0 = time.time()
+                # One coefficient vector per generation: it reads the
+                # population's context, which is the same for every pair in it.
+                coeffs = None
+                if mating_net is not None:
+                    from sesil import mating_fn
+                    ctx = mating_fn.context_features(population_info, args)
+                    coeffs = mating_net.coefficients(ctx)
+                    logger.log_train({
+                        'stage': 'mating_fn',
+                        'generation': generation,
+                        'budget': round(budget.spent, 4),
+                        'coefficients': coeffs,
+                        'context': {k: float(v) for k, v in
+                                    zip(mating_fn.CONTEXT_FIELDS, ctx)},
+                    })
+                    print(f'[gen {generation}] learned mating coefficients: '
+                          + '  '.join(f'{k}={v:+.3f}' for k, v in coeffs.items()))
                 if args.mating_mode == 'hybrid':
                     # Hybrid consults GLOBA only to settle ties, which touches
                     # ~25 of 190 pairs per generation at pop-size 20. Scoring
                     # them all up front cost hours per run for numbers nothing
                     # read, so the scorer decomposes a pair when asked.
-                    pair_scores = LazyGlobaScores(ids, states, globa_core, args)
+                    pair_scores = LazyGlobaScores(ids, states, globa_core,
+                                                  args, coeffs=coeffs)
                 else:
                     # --mating-mode globa ranks EVERY candidate by this score,
                     # so every pair is genuinely needed and eager is no slower.
-                    pair_scores = globa_score_matrix(ids, states, globa_core, args)
+                    pair_scores = globa_score_matrix(ids, states, globa_core,
+                                                     args, coeffs=coeffs)
                     print(f'[gen {generation}] globa pair scoring '
                           f'({args.globa_with}) took {time.time() - t0:.1f}s')
                 # NOTE: `states` is captured by the lazy scorer, so it must not

@@ -227,6 +227,15 @@ def _run_sesil(args, budget, data, logger, evaluator):
         print(budget.report())
         return None
 
+    # Stage 1c: phase C, which fits the mating function on merges it measures
+    # from the pretrained population. Only --globa-with learned needs it, and
+    # it runs before evolution because the rule has to exist by generation 0.
+    # Its cost is forward-only, so it does not eat the backprop budget, but it
+    # is charged and reported like every other forward pass.
+    if args.globa_with == 'learned' and args.start_gen == 0:
+        from sesil.phase_c import run_phase_c
+        run_phase_c(args, budget, data, logger)
+
     # Stage 2: evolution, until the budget runs out.
     return run_evolution(args, budget, data, logger, evaluator)
 

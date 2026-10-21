@@ -83,7 +83,7 @@ def mating_score(cert_a, cert_b, strength_b,
     return score
 
 
-def globa_score_matrix(agent_ids, states, core, args):
+def globa_score_matrix(agent_ids, states, core, args, coeffs=None):
     """Directional pair scores from the GLOBA decomposition.
 
     scores[a][b] is what B brings A: B's cells typed against A's occupancy,
@@ -139,8 +139,8 @@ def globa_score_matrix(agent_ids, states, core, args):
                 head_prefix=args.head_prefix,
                 weighting=args.probe_layer_weighting,
             )
-            scores[a][b] = _globa_value(a_sees_b, args.globa_with)
-            scores[b][a] = _globa_value(b_sees_a, args.globa_with)
+            scores[a][b] = _globa_value(a_sees_b, args.globa_with, coeffs)
+            scores[b][a] = _globa_value(b_sees_a, args.globa_with, coeffs)
     return scores
 
 
@@ -167,11 +167,14 @@ class LazyGlobaScores:
     nobody reads cannot change a decision.
     """
 
-    def __init__(self, agent_ids, states, core, args):
+    def __init__(self, agent_ids, states, core, args, coeffs=None):
         self._ids = list(agent_ids)
         self._states = states
         self._core = core
         self._args = args
+        # Constant for the whole generation under --globa-with learned; None
+        # for every named cell type, which ignores it.
+        self._coeffs = coeffs
         self._cache = {a: {} for a in self._ids}
         self.computed = 0                    # pairs actually decomposed
 
@@ -204,8 +207,10 @@ class LazyGlobaScores:
             weighting=self._args.probe_layer_weighting,
         )
         # One decomposition, both directions -- so fill them both.
-        self._cache[a][b] = _globa_value(a_sees_b, self._args.globa_with)
-        self._cache[b][a] = _globa_value(b_sees_a, self._args.globa_with)
+        self._cache[a][b] = _globa_value(a_sees_b, self._args.globa_with,
+                                         self._coeffs)
+        self._cache[b][a] = _globa_value(b_sees_a, self._args.globa_with,
+                                         self._coeffs)
         self.computed += 1
         return self._cache[a][b]
 
@@ -245,7 +250,22 @@ class _LazyRow:
 _GLOBA_INVERTED = {'D_plus'}
 
 
-def _globa_value(shares, kind):
+def _globa_value(shares, kind, coeffs=None):
+    """Turn one direction's type shares into a scalar.
+
+    'learned' reads every type at once, weighted by coefficients phase C fitted
+    for this population; the named types read exactly one. The coefficients are
+    passed in rather than recomputed because they are constant across the whole
+    generation -- they depend on the population's context, not on the pair.
+    """
+    if kind == 'learned':
+        if coeffs is None:
+            raise ValueError(
+                '--globa-with learned needs coefficients from phase C. '
+                'Run with --globa-with learned so phase C fits them, or pick '
+                'a named cell type.')
+        from sesil.mating_fn import score_from_coefficients
+        return score_from_coefficients(shares, coeffs)
     value = float(shares[kind])
     return 1.0 - value if kind in _GLOBA_INVERTED else value
 
