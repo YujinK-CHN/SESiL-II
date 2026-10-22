@@ -198,6 +198,158 @@ def load(path, map_location='cpu'):
     return net
 
 
+# --------------------------------------------------------------------------- #
+# --mating-mode learn
+# --------------------------------------------------------------------------- #
+#
+# A different question from --globa-with learned, and a different model.
+#
+#   --globa-with learned   reads the POPULATION and emits coefficients over the
+#                          six types; a pair's score is those coefficients
+#                          against its own shares. The rule is linear in the
+#                          shares by construction.
+#   --mating-mode learn    reads THE PAIR -- its genetic profile, the energy
+#                          mapping over all six types -- and predicts how good
+#                          that specific couple's offspring will be. Nothing
+#                          constrains it to be linear, and the prediction is in
+#                          the same units as the measured outcome.
+#
+# Why predict the QUALITY rather than a normalised rank: a rank normalised
+# within a population always puts the best pair at 1.0, so an absolute floor
+# could never say "every pair here is bad, nobody should mate". Predicting the
+# outcome itself keeps the level, so the floor means something fixed.
+#
+# Why one shared network applied per pair, rather than one network emitting a
+# vector over all pairs: a fixed-width output would tie the model to a single
+# population size and to the arbitrary order pairs happen to be enumerated in.
+# Per-pair with shared weights is permutation-equivariant and works for any
+# population, which is what makes it scale.
+
+
+class PairQualityNet(nn.Module):
+    """genetic profile (six type shares) -> predicted offspring quality."""
+
+    def __init__(self, n_types=len(TYPES), hidden=32):
+        super().__init__()
+        self.n_types = int(n_types)
+        self.hidden = int(hidden)
+        self.body = nn.Sequential(
+            nn.Linear(self.n_types, self.hidden), nn.ReLU(),
+            nn.Linear(self.hidden, self.hidden), nn.ReLU(),
+            nn.Linear(self.hidden, 1))
+
+    def forward(self, profile):
+        # Sigmoid: the retention measures this is trained against are
+        # fractions, so the prediction lives in the same bounded range and a
+        # --mate-floor can be read as "offspring at least this good".
+        return torch.sigmoid(self.body(profile)).squeeze(-1)
+
+    @torch.no_grad()
+    def predict(self, shares):
+        """One pair, from the dict directional_pair_stats returns."""
+        x = torch.tensor([[float(shares[t]) for t in TYPES]],
+                         dtype=torch.float32)
+        return float(self(x).item())
+
+
+def _quality_loss(pred, target, rank_weight=1.0):
+    """Regression on the measured quality, plus a ranking term.
+
+    Both are needed and they do different jobs. Regression fixes the LEVEL,
+    without which an absolute --mate-floor is meaningless. Ranking fixes the
+    ORDER, which is what mating actually consumes, and a squared error alone
+    will happily trade a correct ordering for a better average fit.
+    """
+    mse = torch.nn.functional.mse_loss(pred, target)
+    d_p = pred[:, None] - pred[None, :]
+    better = (target[:, None] - target[None, :]) > 0
+    if better.any():
+        rank = -torch.nn.functional.logsigmoid(d_p[better]).mean()
+    else:
+        rank = pred.sum() * 0.0
+    return mse + rank_weight * rank, float(mse.detach()), float(rank.detach())
+
+
+def train_quality(samples, hidden=32, epochs=600, lr=0.005, seed=0,
+                  rank_weight=1.0, verbose=True):
+    """Fit a PairQualityNet across several populations.
+
+    `samples` is a list of populations, each a dict with
+        'shares'  : (n_pairs, 6)   genetic profile per ORDERED pair
+        'outcome' : (n_pairs,)     measured offspring quality, higher better
+
+    Several populations rather than one on purpose: a rule fitted to a single
+    society learns that society's accidents. The ranking term is computed
+    WITHIN each population, because ranking a pair from one society against a
+    pair from another is not a comparison mating ever makes; the regression
+    term is pooled, since quality is on one scale everywhere.
+    """
+    if not samples:
+        raise ValueError('No samples to train the pair-quality net on.')
+
+    torch.manual_seed(seed)
+    net = PairQualityNet(hidden=hidden)
+    opt = torch.optim.Adam(net.parameters(), lr=lr)
+
+    S = [torch.tensor(np.asarray(s['shares'], dtype=np.float32)) for s in samples]
+    Y = [torch.tensor(np.asarray(s['outcome'], dtype=np.float32)) for s in samples]
+
+    history = []
+    for epoch in range(int(epochs)):
+        opt.zero_grad()
+        total, mse_acc, rank_acc = 0.0, 0.0, 0.0
+        for i in range(len(samples)):
+            loss, mse, rank = _quality_loss(net(S[i]), Y[i], rank_weight)
+            total = total + loss
+            mse_acc += mse
+            rank_acc += rank
+        (total / len(samples)).backward()
+        opt.step()
+        if verbose and (epoch % max(1, epochs // 6) == 0 or epoch == epochs - 1):
+            n = len(samples)
+            history.append((epoch, mse_acc / n, rank_acc / n))
+            print(f'[phase c] epoch {epoch:4d}  mse {mse_acc / n:.4f}  '
+                  f'ranking {rank_acc / n:.4f}')
+    return net, history
+
+
+def save_quality(net, path, meta=None):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    torch.save({
+        'kind': 'pair_quality',
+        'state_dict': net.state_dict(),
+        'hidden': net.hidden,
+        'n_types': net.n_types,
+        'types': list(TYPES),
+        'meta': meta or {},
+    }, path)
+    if meta is not None:
+        with open(os.path.splitext(path)[0] + '.json', 'w') as f:
+            json.dump(meta, f, indent=2, default=float)
+
+
+def load_quality(path, map_location='cpu'):
+    blob = torch.load(path, map_location=map_location, weights_only=False)
+    if blob.get('kind') != 'pair_quality':
+        raise ValueError(
+            f'{path} holds a {blob.get("kind", "coefficient")} model, not a '
+            f'pair-quality net. --mating-mode learn and --globa-with learned '
+            f'fit different things and their files are not interchangeable.')
+    if list(blob.get('types', TYPES)) != list(TYPES):
+        raise ValueError(
+            f'Pair-quality net at {path} was trained on cell types '
+            f'{blob.get("types")}, but this build uses {list(TYPES)}.')
+    net = PairQualityNet(n_types=blob['n_types'], hidden=blob['hidden'])
+    net.load_state_dict(blob['state_dict'])
+    net.eval()
+    return net
+
+
+def quality_path(args):
+    """Where phase C writes the pair-quality net, and mating reads it."""
+    return os.path.join(args.run_dir, 'pair_quality.pt')
+
+
 def default_path(args):
     """Where phase C writes the fitted function, and mating reads it."""
     return os.path.join(args.run_dir, 'mating_fn.pt')

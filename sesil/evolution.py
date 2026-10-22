@@ -479,20 +479,24 @@ def mating_needs_globa(args):
     Measured on the affected run: 6% of couples were top-tier by certificate,
     where certificate mating gives ~100%.
     """
-    return args.mating_mode in ('globa', 'hybrid')
+    return args.mating_mode in ('globa', 'hybrid', 'learn')
 
 
 def mating_inputs(args, pair_scores):
     """(scores, tiebreak) for select_mates, given the GLOBA matrix or None.
 
-    Only 'globa' uses the GLOBA matrix AS the score. 'hybrid' passes it
+    'globa' and 'learn' use the matrix AS the score -- cell-type shares in the
+    first case, predicted offspring quality in the second. 'hybrid' passes it
     separately as a tie-break and lets selection build the certificate matrix
     itself. 'certificate' and 'random' must receive None, so selection builds
     their own -- passing anything else silently replaces the scoring rule.
     """
     if args.mating_mode == 'hybrid':
         return None, pair_scores
-    if args.mating_mode == 'globa':
+    if args.mating_mode in ('globa', 'learn'):
+        # 'learn' also scores ON the matrix, but it holds predicted offspring
+        # quality rather than a cell-type share. Returning None here would
+        # leave selection with nothing and it refuses rather than guessing.
         return pair_scores, None
     return None, None
 
@@ -533,6 +537,20 @@ def run_evolution(args, budget, data, logger, evaluator):
     # The learned mating function, fitted by phase C before evolution began.
     # Loaded once: the network is fixed for the run, and only the coefficients
     # it emits move, as the population's context moves.
+    # --mating-mode learn: the pair-quality net, fitted by phase C across
+    # several populations. Predicts the offspring's quality from the pair's
+    # genetic profile, so mating ranks couples by what their child would be.
+    quality_net = None
+    if args.mating_mode == 'learn':
+        from sesil import mating_fn
+        qpath = mating_fn.quality_path(args)
+        if not os.path.exists(qpath):
+            raise SystemExit(
+                f'--mating-mode learn, but no fitted pair-quality net at '
+                f'{qpath}. Phase C writes it before evolution starts.')
+        quality_net = mating_fn.load_quality(qpath)
+        print(f'[evolution] pair-quality net loaded from {qpath}')
+
     mating_net = None
     if args.globa_with == 'learned':
         from sesil import mating_fn
@@ -617,7 +635,17 @@ def run_evolution(args, budget, data, logger, evaluator):
                     })
                     print(f'[gen {generation}] learned mating coefficients: '
                           + '  '.join(f'{k}={v:+.3f}' for k, v in coeffs.items()))
-                if args.mating_mode == 'hybrid':
+                if args.mating_mode == 'learn':
+                    from sesil.selection import learn_score_matrix
+                    pair_scores = learn_score_matrix(ids, states, globa_core,
+                                                     args, quality_net)
+                    vals = [v for row in pair_scores.values()
+                            for v in row.values()]
+                    print(f'[gen {generation}] predicted offspring quality: '
+                          f'min {min(vals):.3f}  median '
+                          f'{sorted(vals)[len(vals) // 2]:.3f}  '
+                          f'max {max(vals):.3f}  (floor {args.mate_floor})')
+                elif args.mating_mode == 'hybrid':
                     # Hybrid consults GLOBA only to settle ties, which touches
                     # ~25 of 190 pairs per generation at pop-size 20. Scoring
                     # them all up front cost hours per run for numbers nothing

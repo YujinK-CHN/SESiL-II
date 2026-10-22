@@ -431,7 +431,8 @@ _CERT_WITH_DEFAULT = 'accuracy'
 def _add_selection_config(parser):
     group = parser.add_argument_group('selection')
     group.add_argument('--mating-mode', type=str, default='certificate',
-                       choices=['certificate', 'random', 'globa', 'hybrid'],
+                       choices=['certificate', 'random', 'globa', 'hybrid',
+                                'learn'],
                        help="What mate choice is based on. 'certificate' scores a "
                             "mate by the classes it is certified on, tuned by "
                             "--cert-with / --weight-extra / --weight-common. "
@@ -529,6 +530,19 @@ def _add_selection_config(parser):
                             'still decides on the certificate alone. Raise it to '
                             'hand more of the decision to GLOBA, lower it to keep '
                             'the certificate in charge.')
+    group.add_argument('--phase-c-populations', type=int, default=4,
+                       help='LEARN MODE ONLY. How many populations phase C '
+                            'fits on. A rule fitted to one society learns that '
+                            "society's accidents, so more than one is the "
+                            'point. The first is the run\'s own and is already '
+                            'paid for; each extra one is a fresh draw of class '
+                            'subsets plus a short phase B from the SAME '
+                            'phase-A backbone, which is what keeps this '
+                            'affordable -- phase A, the expensive half, is '
+                            'never repeated. Cost is therefore roughly '
+                            '(N-1) x phase-B budget in backpropagation, plus a '
+                            'merge and an evaluation for every ordered pair of '
+                            'every population.')
     group.add_argument('--phase-c-pairs', type=int, default=60,
                        help='LEARNED MATING ONLY. How many unordered pairs '
                             'phase C measures before fitting. Both directions '
@@ -866,6 +880,19 @@ def validate(args):
             f'Conflicting settings: {" and ".join(needs_core)} needs a phase-A '
             f'backbone, but --phase-a-ratio is {args.phase_a_ratio}, so phase A '
             f'never runs.')
+
+    if args.mating_mode == 'learn' and args.pretrain_mode != 'ssl':
+        raise SystemExit(
+            f'Conflicting settings: --mating-mode learn with --pretrain-mode '
+            f'{args.pretrain_mode}.\n'
+            f'Learn mode reads the genetic profile, which is defined against a '
+            f'shared phase-A backbone, and it builds extra populations from '
+            f'that backbone. Use --pretrain-mode ssl.')
+
+    if args.mating_mode == 'learn' and args.phase_c_populations < 1:
+        raise SystemExit(
+            f'--phase-c-populations must be >= 1, got '
+            f'{args.phase_c_populations}.')
 
     if args.globa_with == 'learned' and args.mating_mode not in ('globa', 'hybrid'):
         raise SystemExit(

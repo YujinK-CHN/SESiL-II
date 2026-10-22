@@ -232,7 +232,8 @@ def _run_sesil(args, budget, data, logger, evaluator):
     # it runs before evolution because the rule has to exist by generation 0.
     # Its cost is forward-only, so it does not eat the backprop budget, but it
     # is charged and reported like every other forward pass.
-    if args.globa_with == 'learned' and args.start_gen == 0:
+    if (args.globa_with == 'learned' or args.mating_mode == 'learn') \
+            and args.start_gen == 0:
         from sesil.phase_c import run_phase_c
         run_phase_c(args, budget, data, logger)
 

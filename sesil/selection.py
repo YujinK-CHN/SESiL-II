@@ -150,6 +150,79 @@ def globa_score_matrix(agent_ids, states, core, args, coeffs=None,
     return scores
 
 
+def learn_score_matrix(agent_ids, states, core, args, net):
+    """scores[a][b] = predicted quality of the child merge(a, b).
+
+    Same decomposition as globa_score_matrix -- one SVD per analysable layer
+    per pair, both directions from it -- but the shares are fed to the fitted
+    pair-quality net instead of being read one type at a time. The number that
+    comes out is a prediction of the OUTCOME, in the same units phase C
+    measured, which is what lets --mate-floor be an absolute statement about
+    offspring quality rather than a position in a ranking.
+    """
+    from sesil.globa_stats import directional_pair_stats
+
+    scores = {a: {} for a in agent_ids}
+    for i, a in enumerate(agent_ids):
+        for b in agent_ids[i + 1:]:
+            a_sees_b, b_sees_a = directional_pair_stats(
+                states[a], states[b], core,
+                eta=args.probe_eta,
+                svd_energy=args.probe_svd_energy,
+                basis_energy=args.probe_basis_energy,
+                head_prefix=args.head_prefix,
+                weighting=args.probe_layer_weighting,
+            )
+            # Asymmetric: merge(a, b) and merge(b, a) are different children
+            # and get different predictions.
+            scores[a][b] = net.predict(a_sees_b)
+            scores[b][a] = net.predict(b_sees_a)
+    return scores
+
+
+def rank_pairs(scores, floor, agent_ids=None):
+    """Pair by predicted offspring quality, best first; the rest are loners.
+
+    Nothing like the mutual-choice rounds the other modes use, and
+    deliberately. Those ask every agent who it wants and keep the answers that
+    agree, so a pairing is a social fact. Here the prediction already says how
+    good each couple's child would be, so the population-level question -- make
+    the best children available -- is answered by taking the best couples in
+    order and letting the floor decide where to stop.
+
+    A couple is scored by the MEAN of its two directions, because breeding
+    makes BOTH children -- merge(a, b) and merge(b, a) -- and both join the
+    population. Taking the better direction would rate a lopsided couple
+    predicted 0.80/0.10 the same as a balanced one at 0.80/0.78, though the
+    second delivers two good children and the first delivers one good and one
+    poor. The mean is what the couple actually produces, which is also what
+    --mate-floor needs to be comparing against. Ties break on agent id so a
+    run is reproducible.
+    """
+    ids = list(agent_ids if agent_ids is not None else scores.keys())
+    ranked = []
+    for i, a in enumerate(ids):
+        for b in ids[i + 1:]:
+            ab = scores[a].get(b, 0.0) if hasattr(scores[a], 'get') else scores[a][b]
+            ba = scores[b].get(a, 0.0) if hasattr(scores[b], 'get') else scores[b][a]
+            ranked.append((0.5 * (float(ab) + float(ba)), a, b))
+    ranked.sort(key=lambda r: (-r[0], r[1], r[2]))
+
+    taken, pairs = set(), []
+    refused = 0
+    for value, a, b in ranked:
+        if a in taken or b in taken:
+            continue
+        if value < floor:
+            # Ranked, so everything after this is worse: stop rather than scan.
+            refused = len([r for r in ranked if r[0] < floor])
+            break
+        pairs.append(tuple(sorted((a, b))))
+        taken.update((a, b))
+    loners = [m for m in ids if m not in taken]
+    return pairs, loners, refused
+
+
 class LazyGlobaScores:
     """globa_score_matrix's result, computed one pair at a time on demand.
 
@@ -469,6 +542,23 @@ def select_mates(population_info, args, scores=None, tiebreak=None,
 
     Returns (pairs, loners).
     """
+    if args.mating_mode == 'learn':
+        if scores is None:
+            raise ValueError(
+                '--mating-mode learn needs the predicted-quality matrix from '
+                'the caller; it comes from the fitted pair-quality net and '
+                'the GLOBA decomposition, neither of which selection has.')
+        agents = list(scores.keys())
+        pairs, loners, refused = rank_pairs(
+            scores, getattr(args, 'mate_floor', 0.0), agents)
+        if stats is not None:
+            stats['abstained'] = refused
+            stats['abstainers'] = len(loners)
+        assert 2 * len(pairs) + len(loners) == len(agents), (
+            f'Population size mismatch: {2 * len(pairs) + len(loners)} != '
+            f'{len(agents)}')
+        return pairs, loners
+
     if scores is None:
         scores = build_score_matrix(population_info, mode=args.mating_mode,
                                     **_score_kwargs(args))

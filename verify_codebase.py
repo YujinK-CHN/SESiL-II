@@ -874,6 +874,123 @@ def check_lazy_globa_matches_eager(report):
            note='hybrid must be unchanged by the speedup')
 
 
+def check_learn_mating(report):
+    """--mating-mode learn: predict quality, pair by rank, stop at the floor.
+
+    Four failures that would not raise. The prediction could drift outside the
+    range the floor is expressed in, making the floor meaningless. The greedy
+    pairing could reuse an agent, producing a child from a parent already
+    merged. The floor could be ignored, which turns the mode back into "pair
+    everyone". And the two learned models -- coefficients for --globa-with
+    learned, quality for this -- could be loaded interchangeably, silently
+    scoring with the wrong one.
+    """
+    import numpy as np
+    import tempfile
+    from types import SimpleNamespace
+    from sesil import mating_fn, selection
+    from sesil.globa_stats import TYPES
+
+    bad = []
+
+    # --- the net predicts inside [0, 1], the units the floor is read in ---
+    rng = np.random.default_rng(0)
+    pops = []
+    truth = np.zeros(len(TYPES))
+    truth[TYPES.index('E')] = 1.0
+    truth[TYPES.index('D_minus')] = -1.0
+    for _ in range(3):
+        S = rng.dirichlet(np.ones(len(TYPES)) * 2.0, size=30)
+        y = 1.0 / (1.0 + np.exp(-4.0 * (S @ truth)))
+        pops.append({'shares': S, 'outcome': y})
+    net, _ = mating_fn.train_quality(pops, epochs=200, verbose=False)
+
+    probe = rng.dirichlet(np.ones(len(TYPES)) * 2.0, size=50)
+    preds = np.array([net.predict(dict(zip(TYPES, row))) for row in probe])
+    if preds.min() < 0.0 or preds.max() > 1.0:
+        bad.append(f'predictions left [0,1]: {preds.min():.3f}..{preds.max():.3f}')
+    if preds.std() < 1e-4:
+        bad.append('predictions collapsed to a constant -- ranks arbitrarily')
+    held = pops[0]
+    hp = np.array([net.predict(dict(zip(TYPES, r))) for r in held['shares']])
+    rho = np.corrcoef(np.argsort(np.argsort(hp)),
+                      np.argsort(np.argsort(held['outcome'])))[0, 1]
+    if rho < 0.7:
+        bad.append(f'failed to recover a planted quality ordering (rho {rho:.2f})')
+
+    # --- greedy pairing: no agent reused, floor respected, invariant holds ---
+    ids = ['a', 'b', 'c', 'd', 'e', 'f']
+    scores = {x: {y: 0.1 for y in ids if y != x} for x in ids}
+    scores['a']['b'] = scores['b']['a'] = 0.9
+    scores['c']['d'] = scores['d']['c'] = 0.8
+    pairs, loners, refused = selection.rank_pairs(scores, floor=0.5, agent_ids=ids)
+    if sorted(pairs) != [('a', 'b'), ('c', 'd')]:
+        bad.append(f'greedy pairing took the wrong couples: {pairs}')
+    if sorted(loners) != ['e', 'f']:
+        bad.append(f'wrong loners: {loners}')
+    seen = [m for pair in pairs for m in pair]
+    if len(seen) != len(set(seen)):
+        bad.append(f'an agent was used in two couples: {pairs}')
+    if 2 * len(pairs) + len(loners) != len(ids):
+        bad.append('population invariant broken by greedy pairing')
+
+    # A couple is worth the MEAN of its two directions, not the better one:
+    # breeding makes both children. A lopsided 0.90/0.10 couple must rank
+    # BELOW a balanced 0.60/0.60 one, which taking the max would reverse.
+    lop = {x: {y: 0.0 for y in ids if y != x} for x in ids}
+    lop['a']['b'] = 0.90
+    lop['b']['a'] = 0.10          # mean 0.50
+    lop['c']['d'] = lop['d']['c'] = 0.60   # mean 0.60
+    pairs, _loners, _ = selection.rank_pairs(lop, floor=0.55, agent_ids=ids)
+    if ('a', 'b') in pairs:
+        bad.append('a lopsided couple cleared a floor above its mean -- '
+                   'rank_pairs is scoring the better direction, not both')
+    if ('c', 'd') not in pairs:
+        bad.append(f'balanced couple was not taken: {pairs}')
+
+    # A floor above everything must leave nobody paired.
+    pairs, loners, _ = selection.rank_pairs(scores, floor=0.95, agent_ids=ids)
+    if pairs or len(loners) != len(ids):
+        bad.append(f'floor above every prediction still paired {pairs}')
+
+    # A floor of 0 pairs as many as possible.
+    pairs, loners, _ = selection.rank_pairs(scores, floor=0.0, agent_ids=ids)
+    if len(pairs) != len(ids) // 2:
+        bad.append(f'floor 0 left {len(loners)} loners, expected 0')
+
+    # --- selection must refuse to invent the matrix itself ---
+    args = SimpleNamespace(mating_mode='learn', mate_floor=0.5,
+                           mating_rounds=15, weight_extra=1.0,
+                           weight_common=0.1, hybrid_tolerance=0.15)
+    pop = [{'Model Name': i, 'Certificate': {0}, 'Strength': [1.0],
+            'Per Class': [0.5]} for i in ids]
+    try:
+        selection.select_mates(pop, args)
+        bad.append('learn mode built its own score matrix instead of refusing')
+    except ValueError:
+        pass
+
+    # --- the two learned models must not be interchangeable ---
+    with tempfile.TemporaryDirectory() as d:
+        qpath = os.path.join(d, 'pair_quality.pt')
+        mating_fn.save_quality(net, qpath)
+        ctx = np.zeros(len(mating_fn.CONTEXT_FIELDS))
+        coeff_net, _ = mating_fn.train(
+            [{'context': ctx, 'shares': pops[0]['shares'],
+              'outcome': pops[0]['outcome']}], epochs=50, verbose=False)
+        cpath = os.path.join(d, 'mating_fn.pt')
+        mating_fn.save(coeff_net, cpath)
+        try:
+            mating_fn.load_quality(cpath)
+            bad.append('load_quality accepted a coefficient model')
+        except ValueError:
+            pass
+
+    report('learn mating predicts quality in range and pairs by rank',
+           not bad, bad,
+           'rank_pairs walks the predicted ranking and stops at --mate-floor')
+
+
 def check_mating_inputs(report):
     """Only 'globa' may have the GLOBA matrix as its mating SCORE.
 
@@ -902,6 +1019,10 @@ def check_mating_inputs(report):
         'random':      (None, None),
         'globa':       (matrix, None),
         'hybrid':      (None, matrix),
+        # 'learn' also scores ON the matrix -- it holds predicted offspring
+        # quality rather than a cell-type share. Returning None would leave
+        # selection with nothing, and selection refuses rather than guessing.
+        'learn':       (matrix, None),
     }
     for mode, want in expected.items():
         got = mating_inputs(types.SimpleNamespace(mating_mode=mode), matrix)
@@ -1131,6 +1252,7 @@ def main():
     check_learned_mating(report)
     check_globa_mate_floor(report)
     check_mating_inputs(report)
+    check_learn_mating(report)
     check_val_routed_metric(report)
     check_val_routed_is_wired(report)
     check_ensemble_metrics(report)
