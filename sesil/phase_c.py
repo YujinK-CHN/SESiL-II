@@ -290,6 +290,12 @@ def _measure_population(states, accs, trained_on, core, head_prefix, args,
     return np.array(profiles, dtype=np.float64), np.array(outcomes, dtype=np.float64)
 
 
+def phase_c_pop_size(args):
+    """Agents per phase-C population: --phase-c-pop-size, or --pop-size."""
+    n = int(getattr(args, 'phase_c_pop_size', 0) or 0)
+    return n if n > 0 else int(args.pop_size)
+
+
 def _population_from_backbone(args, data, budget, logger, draw_seed, label):
     """A fresh society from the SAME phase-A backbone.
 
@@ -313,26 +319,31 @@ def _population_from_backbone(args, data, budget, logger, draw_seed, label):
             f'--pretrain-mode ssl with --phase-a-ratio > 0.')
     backbone = torch.load(path, map_location='cpu')
 
+    n_agents = phase_c_pop_size(args)
     _phase_a, phase_b = phase_budgets(args)
+    # Per-agent dose matches the real population's, so a phase-C agent is as
+    # trained as a run agent. A smaller society is therefore cheaper in total,
+    # not individually weaker -- which matters, because a weaker agent would
+    # have a different task vector and the profile would not transfer.
     per_agent = phase_b / max(args.pop_size, 1)
     sample_budget = int(round(per_agent * budget.train_set_size))
 
     # Different subsets per extra population: class_subsets keys its draw off
     # args.seed, so the seed is shifted and put back.
-    real_seed = args.seed
-    args.seed = draw_seed
+    real_seed, real_pop = args.seed, args.pop_size
+    args.seed, args.pop_size = draw_seed, n_agents
     try:
         subsets = class_subsets(args, data.num_classes)
     finally:
-        args.seed = real_seed
+        args.seed, args.pop_size = real_seed, real_pop
 
     val_loader = data.val_loader()
     states, accs, trained_on = {}, {}, {}
     head_prefix = None
-    print(f'[phase c] building population {label}: {args.pop_size} agents '
+    print(f'[phase c] building population {label}: {n_agents} agents '
           f'x {per_agent:.3f} epoch-equiv from the phase-A backbone')
 
-    for index in range(args.pop_size):
+    for index in range(n_agents):
         split = subsets[index]
         model = build_model(args, args.num_classes)
         model.load_state_dict(backbone, strict=False)
@@ -386,8 +397,22 @@ def run_learn_phase_c(args, budget, data, logger):
                   for a in agent_ids}
 
     n_pop = max(int(args.phase_c_populations), 1)
-    print(f'[phase c] learn mode: {n_pop} population(s), '
-          f'{args.pop_size * (args.pop_size - 1)} ordered pairs each')
+    n_agents = phase_c_pop_size(args)
+
+    # The run's own population is capped to the same size as the generated
+    # ones. Measuring all 190 pairs of a 20-agent society costs more than
+    # seven whole 8-agent societies, and the second buys far more variety for
+    # the same hours.
+    if n_agents < len(agent_ids):
+        kept = agent_ids[:n_agents]
+        states = {a: states[a] for a in kept}
+        accs = {a: accs[a] for a in kept}
+        trained_on = {a: trained_on[a] for a in kept}
+        print(f'[phase c] using {n_agents} of {len(agent_ids)} run agents '
+              f'(--phase-c-pop-size)')
+
+    print(f'[phase c] learn mode: {n_pop} population(s) of {n_agents}, '
+          f'{n_agents * (n_agents - 1)} ordered pairs each')
 
     samples = []
     prof, out = _measure_population(states, accs, trained_on, core,
@@ -417,6 +442,7 @@ def run_learn_phase_c(args, budget, data, logger):
     path = mating_fn.quality_path(args)
     meta = {
         'populations': len(samples),
+        'agents_per_population': n_agents,
         'pairs_per_population': [int(len(s['outcome'])) for s in samples],
         'outcome': 'transfer',
         'target_mean': float(all_out.mean()),

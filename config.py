@@ -543,6 +543,19 @@ def _add_selection_config(parser):
                             '(N-1) x phase-B budget in backpropagation, plus a '
                             'merge and an evaluation for every ordered pair of '
                             'every population.')
+    group.add_argument('--phase-c-pop-size', type=int, default=0,
+                       help='LEARN MODE ONLY. How many agents each phase-C '
+                            'population holds. 0 (default) uses --pop-size. '
+                            'Set it SMALLER to buy diversity with the same '
+                            'compute: phase C measures every pair, so cost per '
+                            'population grows with the square of this -- 20 '
+                            'agents is 190 pairs, 8 agents is 28. Eight '
+                            'populations of 8 therefore cost about the same as '
+                            'one and a half populations of 20, while showing '
+                            'the network eight different societies instead of '
+                            'one. The model reads a PAIR, not a population, so '
+                            'a rule learned on small societies applies '
+                            'unchanged to the large one that evolution runs.')
     group.add_argument('--phase-c-pairs', type=int, default=60,
                        help='LEARNED MATING ONLY. How many unordered pairs '
                             'phase C measures before fitting. Both directions '

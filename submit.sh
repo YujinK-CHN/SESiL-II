@@ -20,8 +20,10 @@
 #   * Downloads the dataset HERE, on the login node, before submitting.
 #     Compute nodes have no internet and torchvision's download=True would
 #     fail several minutes into the job.
-#   * Writes results to scratch. Home is quota-limited and a sweep of this
-#     shape has reached 113 GB.
+#   * Keeps results beside the code, as on the old machine, so analysis
+#     paths are unchanged. Home is quota-limited on Alliance clusters and a
+#     sweep of this shape has reached 113 GB, so check `diskusage_report`
+#     and consider --out-root ~/scratch/... for long sweeps.
 #   * Quotes the whole command into a generated job script, so an --exp-name
 #     containing parentheses survives.
 #
@@ -33,7 +35,7 @@
 #   --gpu-type  (or $SESIL_GPU_TYPE)  e.g. h100; empty asks for any GPU
 #   --venv      (or $SESIL_VENV)      default ~/venvs/sesil
 #   --data-dir  (or $SESIL_DATA)      default ~/scratch/data
-#   --out-root  (or $SESIL_OUT)       default ~/scratch/sesil_results
+#   --out-root  (or $SESIL_OUT)       default <repo>/results
 #   --dry-run                         print the job script, submit nothing
 #
 set -euo pipefail
@@ -45,8 +47,13 @@ CPUS="${SESIL_CPUS:-12}"
 GPU_TYPE="${SESIL_GPU_TYPE:-}"
 VENV="${SESIL_VENV:-$HOME/venvs/sesil}"
 DATA_DIR="${SESIL_DATA:-$HOME/scratch/data}"
-OUT_ROOT="${SESIL_OUT:-$HOME/scratch/sesil_results}"
+# REPO first: the results default is derived from it.
 REPO="${SESIL_REPO:-$HOME/SESiL-II}"
+# Results live beside the code, as they did on the old machine, so every path
+# in an analysis script keeps working. NOTE this is usually a quota-limited
+# home filesystem -- a full sweep has reached 113 GB -- so watch
+# `diskusage_report` and keep --keep-generations low.
+OUT_ROOT="${SESIL_OUT:-$REPO/results}"
 DRY_RUN=0
 
 SEEDS="0"
@@ -102,7 +109,7 @@ else
   GRES="gpu:${N_SEEDS}"
 fi
 
-mkdir -p "$DATA_DIR" "$OUT_ROOT" "$HOME/scratch/sesil_jobs"
+mkdir -p "$DATA_DIR" "$OUT_ROOT" "$OUT_ROOT/jobs"
 
 # ---- fetch the dataset here, where there is internet --------------------- #
 if [[ $DRY_RUN -eq 0 ]]; then
@@ -133,7 +140,7 @@ fi
 # name is sanitised rather than escaped. The real --exp-name, parentheses
 # and all, still reaches run.sh below.
 SAFE_NAME="${EXP_NAME//[^A-Za-z0-9._-]/_}"
-JOB="$HOME/scratch/sesil_jobs/${SAFE_NAME}.sbatch"
+JOB="$OUT_ROOT/jobs/${SAFE_NAME}.sbatch"
 
 # printf %q so parentheses in --exp-name survive the round trip through a file.
 RUN_ARGS=""
