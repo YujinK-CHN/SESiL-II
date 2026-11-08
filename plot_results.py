@@ -102,6 +102,7 @@ SESIL_REFERENCE = {
     'globa_preset': None,
     'subset_mode': 'random',
     'mating_rounds': 15,
+    'mate_floor': 0.0,
     'individual_budget': 0.5,
     'certify_top_frac': 1.0,
 }
@@ -132,7 +133,17 @@ def load_run(run_dir):
     if not records:
         return None
 
-    head = records[0]
+    head = dict(records[0])
+    # Flags added after the eval record was fixed (e.g. mate_floor) live only
+    # in config.json; without them two arms differing by such a flag would be
+    # averaged as one.
+    cfg_path = os.path.join(run_dir, 'config.json')
+    if os.path.exists(cfg_path):
+        with open(cfg_path, encoding='utf-8') as f:
+            cfg = json.load(f).get('config', {})
+        for field in SESIL_REFERENCE:
+            if field not in head and field in cfg:
+                head[field] = cfg[field]
     method = head.get('method', 'unknown')
     merger = head.get('merger')
     pretrain = head.get('pretrain_mode')
