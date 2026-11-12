@@ -247,6 +247,18 @@ def _measure_population(states, accs, trained_on, core, head_prefix, args,
     train_loader = data.train_loader()
     profiles, outcomes = [], []
 
+    # The child measured here must be the child evolution would make. Evolution
+    # merges on each parent's CERTIFICATE with --merge-head, so the same is
+    # done here, certifying within this population as evolution does within
+    # its own.
+    certificates = certify_population(
+        [accs[a] for a in agent_ids],
+        top_frac=args.certify_top_frac,
+        floor=args.certify_floor,
+        num_classes=args.num_classes,
+    )
+    cert_by_id = {a: set(c) for a, c in zip(agent_ids, certificates)}
+
     pairs = list(itertools.combinations(agent_ids, 2))
     with torch.no_grad():
         for a, b in tqdm(pairs, desc=f'phase c [{label}]: all pairs'):
@@ -262,9 +274,9 @@ def _measure_population(states, accs, trained_on, core, head_prefix, args,
                                           ((b, a), b_sees_a)):
                 child_sd = globa_merge_pair(
                     states[base], states[donor], core,
-                    classes_base=trained_on.get(base),
-                    classes_donor=trained_on.get(donor),
-                    preset=args.globa_preset, head=args.globa_head,
+                    classes_base=cert_by_id[base],
+                    classes_donor=cert_by_id[donor],
+                    preset=args.globa_preset, head=args.merge_head,
                     eta=args.probe_eta, svd_energy=args.probe_svd_energy,
                     basis_energy=args.probe_basis_energy,
                     head_prefix=head_prefix)
