@@ -239,9 +239,9 @@ class PairQualityNet(nn.Module):
             nn.Linear(self.hidden, 1))
 
     def forward(self, profile):
-        # Sigmoid: the retention measures this is trained against are
-        # fractions, so the prediction lives in the same bounded range and a
-        # --mate-floor can be read as "offspring at least this good".
+        # Sigmoid: the target is the child's validation accuracy, a fraction,
+        # so the prediction lives in the same bounded range and a
+        # --mate-floor can be read as "child at least this accurate".
         return torch.sigmoid(self.body(profile)).squeeze(-1)
 
     @torch.no_grad()
@@ -252,22 +252,28 @@ class PairQualityNet(nn.Module):
         return float(self(x).item())
 
 
-def _quality_loss(pred, target, rank_weight=1.0):
+def _quality_loss(pred, target, rank_weight=1.0, mse_scale=1.0):
     """Regression on the measured quality, plus a ranking term.
 
     Both are needed and they do different jobs. Regression fixes the LEVEL,
     without which an absolute --mate-floor is meaningless. Ranking fixes the
     ORDER, which is what mating actually consumes, and a squared error alone
     will happily trade a correct ordering for a better average fit.
+
+    `mse_scale` divides the squared error by the target variance. Child
+    accuracies are small (~0.05), so the raw error is ~1e-4 against a ranking
+    term near 0.7 and the level would go unfitted. The prediction itself stays
+    in accuracy units; only the weight of the regression term changes.
     """
     mse = torch.nn.functional.mse_loss(pred, target)
+    fit = mse * mse_scale
     d_p = pred[:, None] - pred[None, :]
     better = (target[:, None] - target[None, :]) > 0
     if better.any():
         rank = -torch.nn.functional.logsigmoid(d_p[better]).mean()
     else:
         rank = pred.sum() * 0.0
-    return mse + rank_weight * rank, float(mse.detach()), float(rank.detach())
+    return fit + rank_weight * rank, float(mse.detach()), float(rank.detach())
 
 
 def train_quality(samples, hidden=32, epochs=600, lr=0.005, seed=0,
@@ -293,13 +299,15 @@ def train_quality(samples, hidden=32, epochs=600, lr=0.005, seed=0,
 
     S = [torch.tensor(np.asarray(s['shares'], dtype=np.float32)) for s in samples]
     Y = [torch.tensor(np.asarray(s['outcome'], dtype=np.float32)) for s in samples]
+    mse_scale = 1.0 / max(float(torch.cat(Y).var()), 1e-8)
 
     history = []
     for epoch in range(int(epochs)):
         opt.zero_grad()
         total, mse_acc, rank_acc = 0.0, 0.0, 0.0
         for i in range(len(samples)):
-            loss, mse, rank = _quality_loss(net(S[i]), Y[i], rank_weight)
+            loss, mse, rank = _quality_loss(net(S[i]), Y[i], rank_weight,
+                                            mse_scale)
             total = total + loss
             mse_acc += mse
             rank_acc += rank

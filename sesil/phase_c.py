@@ -231,7 +231,12 @@ def run_phase_c(args, budget, data, logger):
 
 def _measure_population(states, accs, trained_on, core, head_prefix, args,
                         budget, data, label, logger):
-    """Every ordered pair of one population: profile in, offspring quality out.
+    """Every ordered pair of one population: profile in, child accuracy out.
+
+    The outcome is the child's own overall validation accuracy -- nothing
+    about its parents enters it. Which parent profiles make good children is
+    left entirely to the network; no hand-written scoring rule (retention,
+    transfer, novelty) is put between the measurement and the fit.
 
     ALL pairs, both directions. --globa-with learned samples because it only
     needs enough points to fit six coefficients; this fits a network on the
@@ -268,19 +273,20 @@ def _measure_population(states, accs, trained_on, core, head_prefix, args,
                 reset_bn_stats(child, train_loader)
                 budget.count_forward_train(1)
 
-                per_class, _overall = evaluate_all_classes(
+                per_class, child_acc = evaluate_all_classes(
                     child, val_loader, args.num_classes)
                 ret = pair_retention(accs[base], accs[donor], per_class)
                 transfer = ret['distinctive_b']
 
                 profiles.append([float(shares[t]) for t in TYPES])
-                outcomes.append(float(transfer))
+                outcomes.append(float(child_acc))
                 logger.log_train({
                     'stage': 'phase_c_pair',
                     'population': label,
                     'budget': round(budget.spent, 4),
                     'base': base,
                     'donor': donor,
+                    'child_acc': child_acc,
                     'transfer': transfer,
                     'balanced': ret['balanced'],
                     **{f'energy_{t}': float(shares[t]) for t in TYPES},
@@ -444,7 +450,7 @@ def run_learn_phase_c(args, budget, data, logger):
         'populations': len(samples),
         'agents_per_population': n_agents,
         'pairs_per_population': [int(len(s['outcome'])) for s in samples],
-        'outcome': 'transfer',
+        'outcome': 'child_acc',
         'target_mean': float(all_out.mean()),
         'target_quantiles': {str(q): float(np.percentile(all_out, q))
                              for q in (10, 25, 50, 75, 90)},
