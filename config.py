@@ -907,6 +907,15 @@ def validate(args):
             f'shared phase-A backbone, and it builds extra populations from '
             f'that backbone. Use --pretrain-mode ssl.')
 
+    if args.mating_mode == 'learn' and args.merger != 'globa':
+        raise SystemExit(
+            f'Conflicting settings: --mating-mode learn with --merger '
+            f'{args.merger}.\n'
+            f'Learn mode mates ordered (base, donor) combinations with ONE '
+            f'child each, which replaces the base. Only the asymmetric GLOBA '
+            f'operator builds a single directed child; the other mergers '
+            f'always make two. Use --merger globa.')
+
     if args.mating_mode == 'learn' and args.phase_c_populations < 1:
         raise SystemExit(
             f'--phase-c-populations must be >= 1, got '

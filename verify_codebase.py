@@ -918,45 +918,44 @@ def check_learn_mating(report):
     if rho < 0.7:
         bad.append(f'failed to recover a planted quality ordering (rho {rho:.2f})')
 
-    # --- greedy pairing: no agent reused, floor respected, invariant holds ---
+    # --- ordered combinations: best first, each agent once, base replaced ---
     ids = ['a', 'b', 'c', 'd', 'e', 'f']
     scores = {x: {y: 0.1 for y in ids if y != x} for x in ids}
-    scores['a']['b'] = scores['b']['a'] = 0.9
-    scores['c']['d'] = scores['d']['c'] = 0.8
-    pairs, loners, refused = selection.rank_pairs(scores, floor=0.5, agent_ids=ids)
-    if sorted(pairs) != [('a', 'b'), ('c', 'd')]:
-        bad.append(f'greedy pairing took the wrong couples: {pairs}')
-    if sorted(loners) != ['e', 'f']:
-        bad.append(f'wrong loners: {loners}')
-    seen = [m for pair in pairs for m in pair]
+    scores['a']['b'] = 0.9
+    scores['b']['a'] = 0.2       # the other order is a different child
+    scores['d']['c'] = 0.8
+    combos, carried, refused = selection.rank_combinations(
+        scores, floor=0.5, agent_ids=ids)
+    if combos != [('a', 'b'), ('d', 'c')]:
+        bad.append(f'took the wrong ordered combinations: {combos}')
+    # Bases are replaced by their child; donors and unmated agents carry on.
+    if sorted(carried) != ['b', 'c', 'e', 'f']:
+        bad.append(f'wrong carried agents: {carried}')
+    seen = [m for combo in combos for m in combo]
     if len(seen) != len(set(seen)):
-        bad.append(f'an agent was used in two couples: {pairs}')
-    if 2 * len(pairs) + len(loners) != len(ids):
-        bad.append('population invariant broken by greedy pairing')
+        bad.append(f'an agent mated twice: {combos}')
+    if len(combos) + len(carried) != len(ids):
+        bad.append('population size not held: one child per combination')
 
-    # A couple is worth the MEAN of its two directions, not the better one:
-    # breeding makes both children. A lopsided 0.90/0.10 couple must rank
-    # BELOW a balanced 0.60/0.60 one, which taking the max would reverse.
-    lop = {x: {y: 0.0 for y in ids if y != x} for x in ids}
-    lop['a']['b'] = 0.90
-    lop['b']['a'] = 0.10          # mean 0.50
-    lop['c']['d'] = lop['d']['c'] = 0.60   # mean 0.60
-    pairs, _loners, _ = selection.rank_pairs(lop, floor=0.55, agent_ids=ids)
-    if ('a', 'b') in pairs:
-        bad.append('a lopsided couple cleared a floor above its mean -- '
-                   'rank_pairs is scoring the better direction, not both')
-    if ('c', 'd') not in pairs:
-        bad.append(f'balanced couple was not taken: {pairs}')
+    # Order matters: (b, a) scores on its own, not on (a, b).
+    one = {x: {y: 0.0 for y in ids if y != x} for x in ids}
+    one['b']['a'] = 0.7
+    combos, _carried, _ = selection.rank_combinations(one, floor=0.5,
+                                                      agent_ids=ids)
+    if combos != [('b', 'a')]:
+        bad.append(f'(b, a) was not taken on its own score: {combos}')
 
-    # A floor above everything must leave nobody paired.
-    pairs, loners, _ = selection.rank_pairs(scores, floor=0.95, agent_ids=ids)
-    if pairs or len(loners) != len(ids):
-        bad.append(f'floor above every prediction still paired {pairs}')
+    # A floor above everything must leave nobody mated.
+    combos, carried, _ = selection.rank_combinations(scores, floor=0.95,
+                                                     agent_ids=ids)
+    if combos or len(carried) != len(ids):
+        bad.append(f'floor above every prediction still mated {combos}')
 
-    # A floor of 0 pairs as many as possible.
-    pairs, loners, _ = selection.rank_pairs(scores, floor=0.0, agent_ids=ids)
-    if len(pairs) != len(ids) // 2:
-        bad.append(f'floor 0 left {len(loners)} loners, expected 0')
+    # A floor of 0 mates as many as possible.
+    combos, _carried, _ = selection.rank_combinations(scores, floor=0.0,
+                                                      agent_ids=ids)
+    if len(combos) != len(ids) // 2:
+        bad.append(f'floor 0 mated {len(combos)}, expected {len(ids) // 2}')
 
     # --- selection must refuse to invent the matrix itself ---
     args = SimpleNamespace(mating_mode='learn', mate_floor=0.5,
@@ -986,9 +985,9 @@ def check_learn_mating(report):
         except ValueError:
             pass
 
-    report('learn mating predicts quality in range and pairs by rank',
+    report('learn mating predicts quality in range and takes combinations by rank',
            not bad, bad,
-           'rank_pairs walks the predicted ranking and stops at --mate-floor')
+           'rank_combinations walks the predicted ranking and stops at --mate-floor')
 
 
 def check_mating_inputs(report):

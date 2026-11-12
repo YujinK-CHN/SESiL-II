@@ -184,7 +184,12 @@ def _breed_globa(pairs, loners, population_info, models, args, data,
         cert = inherit([by_id[p]['Certificate'] for p in pair])
 
         # Twice, swapping base and donor: two children, one leaning each way.
-        for head_index, (base, donor) in enumerate((pair, tuple(reversed(pair)))):
+        # Under --mating-mode learn the pair is an ordered (base, donor)
+        # combination with ONE child, which replaces the base; the donor is
+        # among the loners and carries on unchanged.
+        directions = ((pair,) if args.mating_mode == 'learn'
+                      else (pair, tuple(reversed(pair))))
+        for head_index, (base, donor) in enumerate(directions):
             start = time.time()
             child_sd = globa_merge(
                 states[base], states[donor], core,

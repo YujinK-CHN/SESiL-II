@@ -180,47 +180,46 @@ def learn_score_matrix(agent_ids, states, core, args, net):
     return scores
 
 
-def rank_pairs(scores, floor, agent_ids=None):
-    """Pair by predicted offspring quality, best first; the rest are loners.
+def rank_combinations(scores, floor, agent_ids=None):
+    """Take ordered combinations by predicted child accuracy, best first.
 
-    Nothing like the mutual-choice rounds the other modes use, and
-    deliberately. Those ask every agent who it wants and keep the answers that
-    agree, so a pairing is a social fact. Here the prediction already says how
-    good each couple's child would be, so the population-level question -- make
-    the best children available -- is answered by taking the best couples in
-    order and letting the floor decide where to stop.
+    Every ordered combination (base, donor) is a candidate on its own:
+    scores[a][b] is the predicted accuracy of the ONE child merge(a, b), and
+    (b, a) is a different combination with a different child. A combination
+    is approved when its prediction reaches `floor`; approved ones are taken
+    best first, and one is skipped if either agent has already mated, so each
+    agent mates at most once. Ties break on agent id so a run is reproducible.
 
-    A couple is scored by the MEAN of its two directions, because breeding
-    makes BOTH children -- merge(a, b) and merge(b, a) -- and both join the
-    population. Taking the better direction would rate a lopsided couple
-    predicted 0.80/0.10 the same as a balanced one at 0.80/0.78, though the
-    second delivers two good children and the first delivers one good and one
-    poor. The mean is what the couple actually produces, which is also what
-    --mate-floor needs to be comparing against. Ties break on agent id so a
-    run is reproducible.
+    The child replaces its base. The donor carries on unchanged, so it is
+    returned with the unmated agents in `carried`, and the population size
+    holds: len(combinations) + len(carried) == len(agent_ids).
+
+    Returns (combinations, carried, refused), where combinations are ordered
+    (base, donor) tuples and refused counts the combinations below the floor.
     """
     ids = list(agent_ids if agent_ids is not None else scores.keys())
     ranked = []
-    for i, a in enumerate(ids):
-        for b in ids[i + 1:]:
+    for a in ids:
+        for b in ids:
+            if a == b:
+                continue
             ab = scores[a].get(b, 0.0) if hasattr(scores[a], 'get') else scores[a][b]
-            ba = scores[b].get(a, 0.0) if hasattr(scores[b], 'get') else scores[b][a]
-            ranked.append((0.5 * (float(ab) + float(ba)), a, b))
+            ranked.append((float(ab), a, b))
     ranked.sort(key=lambda r: (-r[0], r[1], r[2]))
 
-    taken, pairs = set(), []
-    refused = 0
+    taken, combinations = set(), []
+    refused = sum(1 for r in ranked if r[0] < floor)
     for value, a, b in ranked:
-        if a in taken or b in taken:
-            continue
         if value < floor:
             # Ranked, so everything after this is worse: stop rather than scan.
-            refused = len([r for r in ranked if r[0] < floor])
             break
-        pairs.append(tuple(sorted((a, b))))
+        if a in taken or b in taken:
+            continue
+        combinations.append((a, b))
         taken.update((a, b))
-    loners = [m for m in ids if m not in taken]
-    return pairs, loners, refused
+    bases = {a for a, _b in combinations}
+    carried = [m for m in ids if m not in bases]
+    return combinations, carried, refused
 
 
 class LazyGlobaScores:
@@ -548,16 +547,18 @@ def select_mates(population_info, args, scores=None, tiebreak=None,
                 '--mating-mode learn needs the predicted-quality matrix from '
                 'the caller; it comes from the fitted pair-quality net and '
                 'the GLOBA decomposition, neither of which selection has.')
+        # Returns ordered (base, donor) combinations, one child each; the
+        # donors come back among the carried agents.
         agents = list(scores.keys())
-        pairs, loners, refused = rank_pairs(
+        combinations, carried, refused = rank_combinations(
             scores, getattr(args, 'mate_floor', 0.0), agents)
         if stats is not None:
             stats['abstained'] = refused
-            stats['abstainers'] = len(loners)
-        assert 2 * len(pairs) + len(loners) == len(agents), (
-            f'Population size mismatch: {2 * len(pairs) + len(loners)} != '
-            f'{len(agents)}')
-        return pairs, loners
+            stats['abstainers'] = len(agents) - 2 * len(combinations)
+        assert len(combinations) + len(carried) == len(agents), (
+            f'Population size mismatch: {len(combinations) + len(carried)} '
+            f'!= {len(agents)}')
+        return combinations, carried
 
     if scores is None:
         scores = build_score_matrix(population_info, mode=args.mating_mode,
