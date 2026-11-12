@@ -89,6 +89,7 @@ def main(argv=None):
                                and args.merger == 'globa' else None),
               'subset_mode': args.subset_mode if args.method == 'sesil' else None,
               'mating_rounds': args.mating_rounds if args.method == 'sesil' else None,
+              'mate_floor': args.mate_floor if args.method == 'sesil' else None,
               # Numeric, but every bit as arm-defining as the modes above, and
               # they were missing: two rounds differing only in
               # --individual-budget carried identical meta, so plot_results
