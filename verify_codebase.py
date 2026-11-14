@@ -903,8 +903,8 @@ def check_learn_mating(report):
         S = rng.dirichlet(np.ones(len(TYPES)) * 2.0, size=30)
         y = 1.0 / (1.0 + np.exp(-4.0 * (S @ truth)))
         pops.append({'shares': S, 'outcome': y})
-    net, _, report = mating_fn.train_quality(pops, epochs=200, verbose=False)
-    if 'holdout' not in report:
+    net, _, fit_rep = mating_fn.train_quality(pops, epochs=200, verbose=False)
+    if 'holdout' not in fit_rep:
         bad.append('train_quality did not report a held-out society')
 
     # --- the real phase-C regime: shares barely vary, accuracies ~0.03 ---
