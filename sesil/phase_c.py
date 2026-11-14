@@ -448,7 +448,7 @@ def run_learn_phase_c(args, budget, data, logger):
         samples.append({'shares': prof, 'outcome': out})
         del st
 
-    net, history = mating_fn.train_quality(
+    net, history, fit_report = mating_fn.train_quality(
         samples, hidden=args.phase_c_hidden, epochs=args.phase_c_epochs,
         lr=args.phase_c_lr, seed=args.seed)
 
@@ -470,6 +470,7 @@ def run_learn_phase_c(args, budget, data, logger):
         'pred_quantiles': {str(q): float(np.percentile(all_pred, q))
                            for q in (10, 25, 50, 75, 90)},
         'loss_history': history,
+        'fit': fit_report,
         'seconds': round(time.time() - start, 1),
     }
     mating_fn.save_quality(net, path, meta=meta)

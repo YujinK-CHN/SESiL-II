@@ -903,7 +903,29 @@ def check_learn_mating(report):
         S = rng.dirichlet(np.ones(len(TYPES)) * 2.0, size=30)
         y = 1.0 / (1.0 + np.exp(-4.0 * (S @ truth)))
         pops.append({'shares': S, 'outcome': y})
-    net, _ = mating_fn.train_quality(pops, epochs=200, verbose=False)
+    net, _, report = mating_fn.train_quality(pops, epochs=200, verbose=False)
+    if 'holdout' not in report:
+        bad.append('train_quality did not report a held-out society')
+
+    # --- the real phase-C regime: shares barely vary, accuracies ~0.03 ---
+    # The unscaled net collapsed to the mean here (R^2 ~ 0) although the
+    # shares carried signal; it must recover a planted ordering.
+    tiny = []
+    for _ in range(4):
+        S = rng.dirichlet(np.ones(len(TYPES)) * 400.0, size=56)
+        signal = S @ truth
+        y = (0.028 + 0.08 * (signal - signal.mean())
+             + rng.normal(0, 0.0005, size=len(S)))
+        tiny.append({'shares': S, 'outcome': y})
+    tnet, _, trep = mating_fn.train_quality(tiny, epochs=400, lr=0.01,
+                                            hidden=16, verbose=False)
+    if trep['holdout']['spearman'] < 0.7:
+        bad.append(f'small-scale regime: held-out spearman '
+                   f'{trep["holdout"]["spearman"]:.2f} -- fit collapsed?')
+    tp = np.array([tnet.predict(dict(zip(TYPES, r)))
+                   for r in tiny[0]['shares']])
+    if abs(tp.mean() - 0.028) > 0.005:
+        bad.append(f'small-scale regime: level off ({tp.mean():.4f} vs 0.028)')
 
     probe = rng.dirichlet(np.ones(len(TYPES)) * 2.0, size=50)
     preds = np.array([net.predict(dict(zip(TYPES, row))) for row in probe])

@@ -227,7 +227,16 @@ def load(path, map_location='cpu'):
 
 
 class PairQualityNet(nn.Module):
-    """genetic profile (six type shares) -> predicted offspring quality."""
+    """genetic profile (six type shares) -> predicted offspring quality.
+
+    Inputs and target are standardised inside the net. The six shares differ
+    between pairs by only ~0.01-0.05 and child accuracies by ~0.003, so on the
+    raw scale the net sees a near-constant input, and an output sigmoid sat at
+    ~0.03 where its slope is ~0.03: the fit collapsed to the mean (R^2 ~ 0)
+    although the shares do correlate with the outcome. The scaling statistics
+    are buffers, saved and loaded with the weights, and `forward` maps back to
+    accuracy units, so --mate-floor still reads as "child at least this good".
+    """
 
     def __init__(self, n_types=len(TYPES), hidden=32):
         super().__init__()
@@ -237,12 +246,26 @@ class PairQualityNet(nn.Module):
             nn.Linear(self.n_types, self.hidden), nn.ReLU(),
             nn.Linear(self.hidden, self.hidden), nn.ReLU(),
             nn.Linear(self.hidden, 1))
+        self.register_buffer('x_mean', torch.zeros(self.n_types))
+        self.register_buffer('x_std', torch.ones(self.n_types))
+        self.register_buffer('y_mean', torch.zeros(()))
+        self.register_buffer('y_std', torch.ones(()))
+
+    @torch.no_grad()
+    def set_scaling(self, X, Y):
+        self.x_mean.copy_(X.mean(0))
+        self.x_std.copy_(X.std(0).clamp_min(1e-8))
+        self.y_mean.copy_(Y.mean())
+        self.y_std.copy_(Y.std().clamp_min(1e-8))
+
+    def forward_z(self, profile):
+        """Prediction in standardised target units; what training fits."""
+        return self.body((profile - self.x_mean) / self.x_std).squeeze(-1)
 
     def forward(self, profile):
-        # Sigmoid: the target is the child's validation accuracy, a fraction,
-        # so the prediction lives in the same bounded range and a
-        # --mate-floor can be read as "child at least this accurate".
-        return torch.sigmoid(self.body(profile)).squeeze(-1)
+        """Prediction in accuracy units, clamped to [0, 1]."""
+        return (self.forward_z(profile) * self.y_std
+                + self.y_mean).clamp(0.0, 1.0)
 
     @torch.no_grad()
     def predict(self, shares):
@@ -252,7 +275,7 @@ class PairQualityNet(nn.Module):
         return float(self(x).item())
 
 
-def _quality_loss(pred, target, rank_weight=1.0, mse_scale=1.0):
+def _quality_loss(pred, target, rank_weight=1.0):
     """Regression on the measured quality, plus a ranking term.
 
     Both are needed and they do different jobs. Regression fixes the LEVEL,
@@ -260,20 +283,71 @@ def _quality_loss(pred, target, rank_weight=1.0, mse_scale=1.0):
     ORDER, which is what mating actually consumes, and a squared error alone
     will happily trade a correct ordering for a better average fit.
 
-    `mse_scale` divides the squared error by the target variance. Child
-    accuracies are small (~0.05), so the raw error is ~1e-4 against a ranking
-    term near 0.7 and the level would go unfitted. The prediction itself stays
-    in accuracy units; only the weight of the regression term changes.
+    Both are taken in standardised units (see PairQualityNet), so they are on
+    comparable scales and need no reweighting.
     """
     mse = torch.nn.functional.mse_loss(pred, target)
-    fit = mse * mse_scale
     d_p = pred[:, None] - pred[None, :]
     better = (target[:, None] - target[None, :]) > 0
     if better.any():
         rank = -torch.nn.functional.logsigmoid(d_p[better]).mean()
     else:
         rank = pred.sum() * 0.0
-    return fit + rank_weight * rank, float(mse.detach()), float(rank.detach())
+    return mse + rank_weight * rank, float(mse.detach()), float(rank.detach())
+
+
+def _fit_quality(samples, hidden, epochs, lr, seed, rank_weight, verbose):
+    torch.manual_seed(seed)
+    net = PairQualityNet(hidden=hidden)
+    S = [torch.tensor(np.asarray(s['shares'], dtype=np.float32)) for s in samples]
+    Y = [torch.tensor(np.asarray(s['outcome'], dtype=np.float32)) for s in samples]
+    net.set_scaling(torch.cat(S), torch.cat(Y))
+    Z = [(y - net.y_mean) / net.y_std for y in Y]
+    opt = torch.optim.Adam(net.parameters(), lr=lr)
+
+    history = []
+    for epoch in range(int(epochs)):
+        opt.zero_grad()
+        total, mse_acc, rank_acc = 0.0, 0.0, 0.0
+        for i in range(len(samples)):
+            loss, mse, rank = _quality_loss(net.forward_z(S[i]), Z[i],
+                                            rank_weight)
+            total = total + loss
+            mse_acc += mse
+            rank_acc += rank
+        (total / len(samples)).backward()
+        opt.step()
+        if epoch % max(1, epochs // 6) == 0 or epoch == epochs - 1:
+            n = len(samples)
+            # mse is in units of the target variance: 1.0 = predicting the mean.
+            history.append((epoch, mse_acc / n, rank_acc / n))
+            if verbose:
+                print(f'[phase c] epoch {epoch:4d}  mse/var {mse_acc / n:.4f}  '
+                      f'ranking {rank_acc / n:.4f}')
+    net.eval()
+    return net, history
+
+
+def _ranks(v):
+    return np.argsort(np.argsort(v)).astype(np.float64)
+
+
+def quality_fit_report(net, samples):
+    """R^2 (accuracy units, pooled) and mean within-population Spearman rho."""
+    ys, ps, rhos = [], [], []
+    with torch.no_grad():
+        for s in samples:
+            y = np.asarray(s['outcome'], dtype=np.float64)
+            p = net(torch.tensor(np.asarray(s['shares'], dtype=np.float32))
+                    ).numpy().astype(np.float64)
+            ys.append(y)
+            ps.append(p)
+            if len(y) > 2 and y.std() > 0 and p.std() > 0:
+                rhos.append(float(np.corrcoef(_ranks(p), _ranks(y))[0, 1]))
+    y, p = np.concatenate(ys), np.concatenate(ps)
+    tot = float(((y - y.mean()) ** 2).sum())
+    r2 = 1.0 - float(((y - p) ** 2).sum()) / tot if tot > 0 else 0.0
+    return {'r2': r2, 'spearman': float(np.mean(rhos)) if rhos else 0.0}
 
 
 def train_quality(samples, hidden=32, epochs=600, lr=0.005, seed=0,
@@ -289,36 +363,35 @@ def train_quality(samples, hidden=32, epochs=600, lr=0.005, seed=0,
     WITHIN each population, because ranking a pair from one society against a
     pair from another is not a comparison mating ever makes; the regression
     term is pooled, since quality is on one scale everywhere.
+
+    With two or more populations the last one is held out first: a net is
+    fitted on the rest and scored on it, so the report says whether the rule
+    carries over to a society it never saw. The returned net is then refitted
+    on all of them.
+
+    Returns (net, history, report); report has 'train' and, when a population
+    could be held out, 'holdout', each {'r2', 'spearman'}.
     """
     if not samples:
         raise ValueError('No samples to train the pair-quality net on.')
 
-    torch.manual_seed(seed)
-    net = PairQualityNet(hidden=hidden)
-    opt = torch.optim.Adam(net.parameters(), lr=lr)
+    report = {}
+    if len(samples) >= 2:
+        held_net, _ = _fit_quality(samples[:-1], hidden, epochs, lr, seed,
+                                   rank_weight, verbose=False)
+        report['holdout'] = quality_fit_report(held_net, samples[-1:])
+        if verbose:
+            print(f'[phase c] held-out society  '
+                  f'R2 {report["holdout"]["r2"]:+.3f}  '
+                  f'spearman {report["holdout"]["spearman"]:+.3f}')
 
-    S = [torch.tensor(np.asarray(s['shares'], dtype=np.float32)) for s in samples]
-    Y = [torch.tensor(np.asarray(s['outcome'], dtype=np.float32)) for s in samples]
-    mse_scale = 1.0 / max(float(torch.cat(Y).var()), 1e-8)
-
-    history = []
-    for epoch in range(int(epochs)):
-        opt.zero_grad()
-        total, mse_acc, rank_acc = 0.0, 0.0, 0.0
-        for i in range(len(samples)):
-            loss, mse, rank = _quality_loss(net(S[i]), Y[i], rank_weight,
-                                            mse_scale)
-            total = total + loss
-            mse_acc += mse
-            rank_acc += rank
-        (total / len(samples)).backward()
-        opt.step()
-        if verbose and (epoch % max(1, epochs // 6) == 0 or epoch == epochs - 1):
-            n = len(samples)
-            history.append((epoch, mse_acc / n, rank_acc / n))
-            print(f'[phase c] epoch {epoch:4d}  mse {mse_acc / n:.4f}  '
-                  f'ranking {rank_acc / n:.4f}')
-    return net, history
+    net, history = _fit_quality(samples, hidden, epochs, lr, seed,
+                                rank_weight, verbose)
+    report['train'] = quality_fit_report(net, samples)
+    if verbose:
+        print(f'[phase c] all societies     R2 {report["train"]["r2"]:+.3f}  '
+              f'spearman {report["train"]["spearman"]:+.3f}')
+    return net, history, report
 
 
 def save_quality(net, path, meta=None):
@@ -347,6 +420,10 @@ def load_quality(path, map_location='cpu'):
         raise ValueError(
             f'Pair-quality net at {path} was trained on cell types '
             f'{blob.get("types")}, but this build uses {list(TYPES)}.')
+    if 'x_mean' not in blob['state_dict']:
+        raise ValueError(
+            f'Pair-quality net at {path} predates input/target scaling '
+            f'and cannot be loaded by this build; rerun phase C.')
     net = PairQualityNet(n_types=blob['n_types'], hidden=blob['hidden'])
     net.load_state_dict(blob['state_dict'])
     net.eval()
