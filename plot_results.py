@@ -103,6 +103,7 @@ SESIL_REFERENCE = {
     'subset_mode': 'random',
     'mating_rounds': 15,
     'mate_floor': 0.0,
+    'phase_c_rank_weight': None,
     'individual_budget': 0.5,
     'certify_top_frac': 1.0,
 }
@@ -144,6 +145,10 @@ def load_run(run_dir):
         for field in SESIL_REFERENCE:
             if field not in head and field in cfg:
                 head[field] = cfg[field]
+    # Learn runs from before --phase-c-rank-weight trained with the ranking
+    # term at weight 1; label them so, not as the new fit-only default.
+    if head.get('mating_mode') == 'learn' and 'phase_c_rank_weight' not in head:
+        head['phase_c_rank_weight'] = 1.0
     method = head.get('method', 'unknown')
     merger = head.get('merger')
     pretrain = head.get('pretrain_mode')

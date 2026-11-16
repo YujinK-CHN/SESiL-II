@@ -450,7 +450,8 @@ def run_learn_phase_c(args, budget, data, logger):
 
     net, history, fit_report = mating_fn.train_quality(
         samples, hidden=args.phase_c_hidden, epochs=args.phase_c_epochs,
-        lr=args.phase_c_lr, seed=args.seed)
+        lr=args.phase_c_lr, seed=args.seed,
+        rank_weight=args.phase_c_rank_weight)
 
     all_out = np.concatenate([s['outcome'] for s in samples])
     with torch.no_grad():
@@ -463,6 +464,7 @@ def run_learn_phase_c(args, budget, data, logger):
         'agents_per_population': n_agents,
         'pairs_per_population': [int(len(s['outcome'])) for s in samples],
         'outcome': 'child_acc',
+        'rank_weight': float(args.phase_c_rank_weight),
         'target_mean': float(all_out.mean()),
         'target_quantiles': {str(q): float(np.percentile(all_out, q))
                              for q in (10, 25, 50, 75, 90)},

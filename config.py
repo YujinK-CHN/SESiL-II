@@ -579,6 +579,12 @@ def _add_selection_config(parser):
     group.add_argument('--phase-c-lr', type=float, default=0.01,
                        help='LEARNED MATING ONLY. Adam learning rate for the '
                             'mating function.')
+    group.add_argument('--phase-c-rank-weight', type=float, default=0.0,
+                       help='LEARN MODE ONLY. Weight of the within-society '
+                            'ranking term in the mating network\'s loss. 0 '
+                            '(default) trains on the fit term alone: squared '
+                            'error between predicted and measured child '
+                            'accuracy. Runs before this flag existed used 1.')
     group.add_argument('--mating-rounds', type=int, default=15,
                        help='How many rounds of mate choice to run. Each round: '
                             'everyone still unpaired picks a partner from those '
