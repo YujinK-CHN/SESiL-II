@@ -913,8 +913,8 @@ def check_genetic_dataset(report):
             bred = dict(kids[0], source='evolution', child_val_overall=9.0)
             key = gd.run_key(run)
             gd.write_table(pairs, gd.shard_stem(root, 'pairs', key))
-            gd.write_table(kids, gd.shard_stem(root, 'children', key, 'generated.globa_label'))
-            gd.write_table([bred], gd.shard_stem(root, 'children', key, 'evolution'))
+            gd.write_table(kids, gd.shard_stem(root, gd.children_table('label'), key, 'generated.globa_label'))
+            gd.write_table([bred], gd.shard_stem(root, gd.children_table('label'), key, 'evolution'))
         groups = gd.labelled_groups(root, head='label')
         n = sum(len(v) for v in groups.values())
         if len(groups) != 6 or n != 2 * 3 * 30:

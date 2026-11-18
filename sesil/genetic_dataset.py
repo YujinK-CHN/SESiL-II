@@ -30,7 +30,7 @@ published as is:
     <root>/README.md                 dataset card (YAML header + description)
     <root>/runs.json
     <root>/pairs/<run_key>.parquet   (or .csv.gz without pyarrow)
-    <root>/children/<run_key>.<source>.parquet
+    <root>/children_label/<run_key>.<source>.parquet   (and children_average/)
 
 One shard per source run, so building is resumable and a run can be added or
 dropped without touching the rest.
@@ -111,6 +111,16 @@ def read_table(path):
             rows.append({k: (json.loads(v) if k in LIST_COLUMNS and v else _cast(v))
                          for k, v in r.items()})
         return rows
+
+
+HEADS = ('label', 'average')
+
+
+def children_table(head):
+    """Children are stored per merge head: children_label/, children_average/."""
+    if head not in HEADS:
+        raise ValueError(f'Unknown merge head {head!r}; expected one of {HEADS}')
+    return f'children_{head}'
 
 
 def shard_stem(root, table, run_key, suffix=''):
@@ -317,10 +327,13 @@ def build_pairs(run_dir, run_id, cfg, out_root, device='cpu', log=print):
     key = run_key(run_id)
     agents, offspring = read_run_log(run_dir)
 
-    child_stem = shard_stem(out_root, 'children', key, 'evolution')
     kids = evolution_children(run_id, cfg, agents, offspring)
-    if kids and not existing_shard(child_stem):
-        write_table(kids, child_stem)
+    # One table per merge head: the label and average heads make children that
+    # differ a lot in accuracy, so they are never pooled by accident.
+    for head in sorted({k['merge_head'] for k in kids}):
+        child_stem = shard_stem(out_root, children_table(head), key, 'evolution')
+        if not existing_shard(child_stem):
+            write_table([k for k in kids if k['merge_head'] == head], child_stem)
 
     stem = shard_stem(out_root, 'pairs', key)
     if existing_shard(stem):
@@ -369,7 +382,7 @@ def generate_children(run_dir, run_id, cfg, out_root, per_generation,
 
     key = run_key(run_id)
     suffix = f'generated.{preset}_{head}'
-    stem = shard_stem(out_root, 'children', key, suffix)
+    stem = shard_stem(out_root, children_table(head), key, suffix)
     done_path = existing_shard(stem)
     rows = read_table(done_path) if done_path else []
     done = {(r['generation'], r['base'], r['donor']) for r in rows}
@@ -443,7 +456,7 @@ def labelled_groups(root, merger='globa', preset=None, head='label',
     Returns {(run_id, generation): [(pair_row, child_row), ...]}. A pair
     measured twice (bred in the run AND generated) keeps the evolution one.
     """
-    children = [c for c in load_table(root, 'children')
+    children = [c for c in load_table(root, children_table(head))
                 if c.get('merger') == merger
                 and (preset is None or c.get('globa_preset') == preset)
                 and c.get('merge_head') == head
@@ -474,8 +487,10 @@ tags:
 configs:
 - config_name: pairs
   data_files: "pairs/*"
-- config_name: children
-  data_files: "children/*"
+- config_name: children_label
+  data_files: "children_label/*"
+- config_name: children_average
+  data_files: "children_average/*"
 ---
 
 # SESiL genetic pairs (schema v{version})
@@ -488,6 +503,11 @@ children they produced. Built by `build_dataset.py` from {n_runs} source runs.
 **pairs** -- one row per ordered pair (base, donor) of agents alive in the
 same generation of the same run.
 
+Every row carries its `generation`. Agent names are reused across generations
+(`agent_003` in generation 4 is a different network from `agent_003` in
+generation 5), so an agent is identified by (run_id, generation, name), and
+(run_id, generation) is one population.
+
 | column | meaning |
 |---|---|
 | run_id, generation, base, donor | key; (a, b) and (b, a) are different rows |
@@ -497,8 +517,11 @@ same generation of the same run.
 | base_/donor_cert(_size), cert_overlap | parents' certificates |
 | mated | whether the run itself bred merge(base, donor) |
 
-**children** -- one row per measured child merge(base, donor), joined to
-pairs on (run_id, generation, base, donor).
+**children_label**, **children_average** -- one row per measured child
+merge(base, donor), joined to pairs on (run_id, generation, base, donor). Kept
+apart by merge head: the label head (classifier rows taken whole for classes
+only one parent holds) and the average head produce children of very
+different accuracy, so mixing them would mix two outcomes.
 
 | column | meaning |
 |---|---|
@@ -518,7 +541,7 @@ pairs on (run_id, generation, base, donor).
 
 def write_card(root, runs):
     pairs = load_table(root, 'pairs')
-    children = load_table(root, 'children')
+    children = [c for h in HEADS for c in load_table(root, children_table(h))]
     by = {}
     for c in children:
         k = (c.get('merger'), c.get('globa_preset'), c.get('merge_head'), c.get('source'))
