@@ -17,14 +17,19 @@ siblings genuinely differ: one is a plus what b brought, the other is b plus
 what a brought. No interpolation weight has to be invented to tell them apart,
 which is what --merge-bias existed to do for the ZipIt path.
 
-GLOBA's published defaults take only two of the six types from the donor:
+The 'globa' preset takes only two of the six types from the donor:
 
     scale_c1_identity = 1.0
     D_minus = 1.0    E = 1.0    A = B = C = D_plus = 0.0
 
 Keep the base entire, add the cells where the donor disagrees with it and the
-gaps the donor fills inside its span. Worth noting those are the same two types
-that came out of the selection study on independent evidence.
+gaps the donor fills inside its span. These values follow GLOBA's released
+code. The paper (Liu, Li & Zhou, AAAI-26) names no single default: it reports
+that each overlap type can be a harmful conflict or a beneficial synergy
+depending on the model pair. D_minus, for example, destroys one task in its
+Table 4, helps in its Figure 1, and is best weighted at 1.2x in its Figure 3.
+This codebase's own selection study found no type that predicts child quality
+reliably (see --globa-with), so the preset is a design choice, not a tuned one.
 
 THE HEAD IS NOT MERGED BY THE DECOMPOSITION. Agents here are finetuned from one
 backbone with a freshly random classifier each, so averaging two classifiers
@@ -53,8 +58,8 @@ from sesil.globa_stats import (
 # How much of each DONOR type is carried into the child. The base is always
 # taken whole (scale 1.0), as in GLOBA.
 DONOR_PRESETS = {
-    # GLOBA's published default: the donor contributes where it disagrees with
-    # the base, and where it fills a gap inside the base's row/column span.
+    # Following GLOBA's released code: the donor contributes where it disagrees
+    # with the base, and where it fills a gap inside the base's row/column span.
     'globa': {'D_minus': 1.0, 'E': 1.0,
               'A': 0.0, 'B': 0.0, 'C': 0.0, 'D_plus': 0.0},
 
