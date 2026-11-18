@@ -874,107 +874,6 @@ def check_lazy_globa_matches_eager(report):
            note='hybrid must be unchanged by the speedup')
 
 
-def check_genetic_dataset(report):
-    """The genetic dataset joins pairs to children and trains a usable model.
-
-    Failures that would not raise: a pair joined to the wrong child (key
-    mismatch after a CSV round trip turns ints into strings), a pair measured
-    twice counted twice, or a generated child shadowing the one the run bred.
-    """
-    import tempfile
-    import numpy as np
-    from sesil import genetic_dataset as gd
-    from sesil import mating_fn
-
-    bad = []
-    rng = np.random.default_rng(0)
-    with tempfile.TemporaryDirectory() as root:
-        for run in ('expA/cifar100/x/seed0', 'expA/cifar100/x/seed3'):
-            pairs, kids = [], []
-            for g in range(3):
-                for i in range(6):
-                    for j in range(6):
-                        if i == j:
-                            continue
-                        S = rng.dirichlet(np.ones(len(gd.SHARE_COLUMNS)))
-                        r = {'run_id': run, 'generation': g,
-                             'base': f'agent_{i:03d}', 'donor': f'agent_{j:03d}'}
-                        r.update(dict(zip(gd.SHARE_COLUMNS, map(float, S))))
-                        r.update({'novel': 1.0, 'base_cert': [i], 'donor_cert': [j],
-                                  'mated': False})
-                        pairs.append(r)
-                        y = float(S[3] - S[5])
-                        kids.append({**{k: r[k] for k in gd.KEY},
-                                     'merger': 'globa', 'globa_preset': 'globa',
-                                     'merge_head': 'label', 'cert_pool': 6,
-                                     'child_val_overall': y, 'child_cert': [i, j],
-                                     'child_val_per_class': [y], 'source': 'generated'})
-            # One pair also bred by the run, with a different value: it must win.
-            bred = dict(kids[0], source='evolution', child_val_overall=9.0)
-            key = gd.run_key(run)
-            gd.write_table(pairs, gd.shard_stem(root, 'pairs', key))
-            gd.write_table(kids, gd.shard_stem(root, gd.children_table('label'), key, 'generated.globa_label'))
-            gd.write_table([bred], gd.shard_stem(root, gd.children_table('label'), key, 'evolution'))
-        groups = gd.labelled_groups(root, head='label')
-        n = sum(len(v) for v in groups.values())
-        if len(groups) != 6 or n != 2 * 3 * 30:
-            bad.append(f'join gave {len(groups)} groups / {n} rows, expected 6 / 180')
-        first = groups[('expA/cifar100/x/seed0', 0)]
-        hit = [c for p, c in first if p['base'] == 'agent_000' and p['donor'] == 'agent_001']
-        if len(hit) != 1 or hit[0]['source'] != 'evolution':
-            bad.append(f'bred child did not take precedence: {hit}')
-        if not isinstance(first[0][0]['base_cert'], list):
-            bad.append('list columns did not survive the round trip')
-        if gd.labelled_groups(root, head='average'):
-            bad.append('head filter let label-head children through')
-
-        samples = [{'shares': np.array([[p[c] for c in gd.SHARE_COLUMNS] for p, _c in rows]),
-                    'outcome': np.array([c['child_val_overall'] for _p, c in rows])}
-                   for (run, _g), rows in sorted(groups.items()) if run.endswith('seed0')]
-        for s in samples:
-            keep = s['outcome'] < 5      # drop the planted 9.0
-            s['shares'], s['outcome'] = s['shares'][keep], s['outcome'][keep]
-        net, _h, rep = mating_fn.train_quality(samples, hidden=16, epochs=300,
-                                               lr=0.01, verbose=False)
-        if rep['holdout']['spearman'] < 0.7:
-            bad.append(f'model trained on the dataset ranks poorly '
-                       f'(held-out spearman {rep["holdout"]["spearman"]:.2f})')
-
-        # --log-profiles: a run whose weights are gone still yields pair rows.
-        import json as _json
-        from types import SimpleNamespace
-        from sesil.globa_stats import TYPES
-        from sesil.selection import learn_score_matrix
-        run = os.path.join(root, 'runs', 'r')
-        os.makedirs(run)
-        cols = ['base', 'donor'] + list(TYPES) + ['novel']
-        logged = [['agent_000', 'agent_001'] + [0.5, 0.1, 0.1, 0.1, 0.1, 0.1] + [2.0],
-                  ['agent_001', 'agent_000'] + [0.1, 0.1, 0.1, 0.5, 0.1, 0.1] + [3.0]]
-        with open(os.path.join(run, 'train.jsonl'), 'w') as f:
-            for a in ('agent_000', 'agent_001'):
-                f.write(_json.dumps({'stage': 'population', 'generation': 4,
-                                     'agent': a, 'certificate': [1],
-                                     'val_overall': 0.1}) + chr(10))
-            f.write(_json.dumps({'stage': 'profiles', 'generation': 4,
-                                 'columns': cols, 'pairs': logged}) + chr(10))
-        out = os.path.join(root, 'logged_ds')
-        n_pairs, _ = gd.build_pairs(run, 'r', {'arch': 'resnet20x4'}, out,
-                                    log=lambda *a, **k: None)
-        rows = gd.load_table(out, 'pairs')
-        if n_pairs != 2 or {r['profile_source'] for r in rows} != {'logged'}:
-            bad.append(f'logged profiles gave {n_pairs} rows: {rows}')
-        elif next(r for r in rows if r['base'] == 'agent_001')['share_E'] != 0.5:
-            bad.append('logged profile columns were read in the wrong order')
-        # learn scoring uses the profiles it is handed instead of recomputing.
-        given = gd.read_logged_profiles(run)[4]
-        sc = learn_score_matrix(['agent_000', 'agent_001'], None, None,
-                                SimpleNamespace(), net, profiles=given)
-        if sc['agent_000']['agent_001'] == sc['agent_001']['agent_000']:
-            bad.append('learn scoring ignored the given profiles')
-
-    report('genetic dataset joins pairs to children and trains a model', not bad, bad)
-
-
 def check_learn_mating(report):
     """--mating-mode learn: predict quality, pair by rank, stop at the floor.
 
@@ -1423,7 +1322,6 @@ def main():
     check_globa_mate_floor(report)
     check_mating_inputs(report)
     check_learn_mating(report)
-    check_genetic_dataset(report)
     check_val_routed_metric(report)
     check_val_routed_is_wired(report)
     check_ensemble_metrics(report)

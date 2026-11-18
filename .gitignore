@@ -10,7 +10,4 @@
 __pycache__/
 *.py[cod]
 
-# Genetic-learning dataset shards (built on the cluster; card and runs.json are kept)
-/dataset/*/pairs/
 /.venv/
-/dataset/*/children_*/
