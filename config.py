@@ -326,6 +326,14 @@ def _add_evolution_config(parser):
                             'entropy, agreement, or a voting rule invented '
                             'later. Off by default because it is the only '
                             'thing here that costs real disk.')
+    group.add_argument('--log-profiles', action='store_true',
+                       help='Each generation, write the genetic profile (six '
+                            'GLOBA shares + novelty) of every ordered pair to '
+                            'train.jsonl. The genetic-learning dataset can then '
+                            'use every generation of the run without keeping '
+                            'its weights. Needs --pretrain-mode ssl. About 1 s '
+                            'of CPU per pair (190 pairs at --pop-size 20); no '
+                            'training budget is spent.')
     group.add_argument('--keep-generations', type=int, default=2,
                        help='How many of the most recent generation directories to '
                             'keep on disk. Generation 0 is always kept -- it is the '

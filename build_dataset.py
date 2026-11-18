@@ -1,9 +1,11 @@
 """
 Build the genetic-learning dataset from finished SESiL runs.
 
-    # 1. profiles for every ordered pair + the children the runs bred (cheap:
-    #    weights only, no data). GPU makes the SVDs much faster.
-    python build_dataset.py profiles --results results --out dataset/sesil_genetic_pairs --device cuda
+    # 1. profiles for every ordered pair + the children the runs bred (weights
+    #    only, no data). Runs on CPU: the decomposition is float64, which is
+    #    ~4x slower on a consumer GPU and differs from evolution's CPU numbers
+    #    in the 4th decimal. --jobs runs that many source runs in parallel.
+    python build_dataset.py profiles --results results --out dataset/sesil_genetic_pairs --jobs 4
 
     # 2. more labels: build and measure children for pairs the runs never
     #    bred, N per generation per run (GPU, needs the datasets).
@@ -20,10 +22,18 @@ which runs are used.
 """
 
 import argparse
+import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from sesil import genetic_dataset as gd
+
+
+def _profiles_job(run_dir, run_id, cfg, out, threads):
+    import torch
+    torch.set_num_threads(threads)
+    return run_id, gd.build_pairs(run_dir, run_id, cfg, out, device='cpu')
 
 
 def main(argv=None):
@@ -34,7 +44,11 @@ def main(argv=None):
     p.add_argument('--out', default='dataset/sesil_genetic_pairs')
     p.add_argument('--include', nargs='*', default=None,
                    help='regexes on run id; a run is used if any matches')
-    p.add_argument('--device', default='cpu')
+    p.add_argument('--device', default='cpu',
+                   help='children step only (profiles always run on CPU)')
+    p.add_argument('--jobs', type=int, default=1,
+                   help='profiles step: source runs processed in parallel; '
+                        'CPU threads are split evenly between them')
     p.add_argument('--data-dir', default=None,
                    help='children step: where the image datasets are, if not '
                         'where the source runs found them')
@@ -54,13 +68,19 @@ def main(argv=None):
         return 1
 
     t0 = time.time()
+    if a.step == 'profiles':
+        jobs = max(1, a.jobs)
+        threads = max(1, (os.cpu_count() or 1) // jobs)
+        with ProcessPoolExecutor(max_workers=jobs) as pool:
+            futures = [pool.submit(_profiles_job, d, r, c, a.out, threads)
+                       for d, r, c in runs]
+            for i, f in enumerate(as_completed(futures), 1):
+                run_id, (n_pairs, n_kids) = f.result()
+                print(f'[dataset] ({i}/{len(runs)}) done {run_id}: '
+                      f'{n_pairs} pairs, {n_kids} bred children', flush=True)
     for i, (run_dir, run_id, cfg) in enumerate(runs, 1):
-        print(f'[dataset] ({i}/{len(runs)}) {run_id}')
-        if a.step == 'profiles':
-            n_pairs, n_kids = gd.build_pairs(run_dir, run_id, cfg, a.out,
-                                             device=a.device)
-            print(f'[dataset]   {n_pairs} pairs, {n_kids} bred children')
-        elif a.step == 'children':
+        if a.step == 'children':
+            print(f'[dataset] ({i}/{len(runs)}) {run_id}')
             n = gd.generate_children(run_dir, run_id, cfg, a.out,
                                      per_generation=a.per_generation,
                                      preset=a.preset, head=a.head,

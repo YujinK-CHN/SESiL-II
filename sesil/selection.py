@@ -150,19 +150,16 @@ def globa_score_matrix(agent_ids, states, core, args, coeffs=None,
     return scores
 
 
-def learn_score_matrix(agent_ids, states, core, args, net):
-    """scores[a][b] = predicted quality of the child merge(a, b).
+def pair_profiles(agent_ids, states, core, args):
+    """{(a, b): profile of merge(a, b)} for every ordered pair.
 
-    Same decomposition as globa_score_matrix -- one SVD per analysable layer
-    per pair, both directions from it -- but the shares are fed to the fitted
-    pair-quality net instead of being read one type at a time. The number that
-    comes out is a prediction of the OUTCOME, in the same units phase C
-    measured, which is what lets --mate-floor be an absolute statement about
-    offspring quality rather than a position in a ranking.
+    One decomposition per unordered pair yields both directions. Each profile
+    is the dict directional_pair_stats returns: the six type shares plus
+    '_novel', the donor's unnormalised energy outside D_plus.
     """
     from sesil.globa_stats import directional_pair_stats
 
-    scores = {a: {} for a in agent_ids}
+    out = {}
     for i, a in enumerate(agent_ids):
         for b in agent_ids[i + 1:]:
             a_sees_b, b_sees_a = directional_pair_stats(
@@ -173,10 +170,31 @@ def learn_score_matrix(agent_ids, states, core, args, net):
                 head_prefix=args.head_prefix,
                 weighting=args.probe_layer_weighting,
             )
-            # Asymmetric: merge(a, b) and merge(b, a) are different children
-            # and get different predictions.
-            scores[a][b] = net.predict(a_sees_b)
-            scores[b][a] = net.predict(b_sees_a)
+            out[(a, b)] = a_sees_b
+            out[(b, a)] = b_sees_a
+    return out
+
+
+def learn_score_matrix(agent_ids, states, core, args, net, profiles=None):
+    """scores[a][b] = predicted quality of the child merge(a, b).
+
+    `profiles`, from pair_profiles, skips the decomposition when the caller
+    has already done it (--log-profiles does, every generation).
+
+    Same decomposition as globa_score_matrix -- one SVD per analysable layer
+    per pair, both directions from it -- but the shares are fed to the fitted
+    pair-quality net instead of being read one type at a time. The number that
+    comes out is a prediction of the OUTCOME, in the same units phase C
+    measured, which is what lets --mate-floor be an absolute statement about
+    offspring quality rather than a position in a ranking.
+    """
+    if profiles is None:
+        profiles = pair_profiles(agent_ids, states, core, args)
+    # Asymmetric: merge(a, b) and merge(b, a) are different children and get
+    # different predictions.
+    scores = {a: {} for a in agent_ids}
+    for (a, b), prof in profiles.items():
+        scores[a][b] = net.predict(prof)
     return scores
 
 

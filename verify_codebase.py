@@ -940,6 +940,38 @@ def check_genetic_dataset(report):
             bad.append(f'model trained on the dataset ranks poorly '
                        f'(held-out spearman {rep["holdout"]["spearman"]:.2f})')
 
+        # --log-profiles: a run whose weights are gone still yields pair rows.
+        import json as _json
+        from types import SimpleNamespace
+        from sesil.globa_stats import TYPES
+        from sesil.selection import learn_score_matrix
+        run = os.path.join(root, 'runs', 'r')
+        os.makedirs(run)
+        cols = ['base', 'donor'] + list(TYPES) + ['novel']
+        logged = [['agent_000', 'agent_001'] + [0.5, 0.1, 0.1, 0.1, 0.1, 0.1] + [2.0],
+                  ['agent_001', 'agent_000'] + [0.1, 0.1, 0.1, 0.5, 0.1, 0.1] + [3.0]]
+        with open(os.path.join(run, 'train.jsonl'), 'w') as f:
+            for a in ('agent_000', 'agent_001'):
+                f.write(_json.dumps({'stage': 'population', 'generation': 4,
+                                     'agent': a, 'certificate': [1],
+                                     'val_overall': 0.1}) + chr(10))
+            f.write(_json.dumps({'stage': 'profiles', 'generation': 4,
+                                 'columns': cols, 'pairs': logged}) + chr(10))
+        out = os.path.join(root, 'logged_ds')
+        n_pairs, _ = gd.build_pairs(run, 'r', {'arch': 'resnet20x4'}, out,
+                                    log=lambda *a, **k: None)
+        rows = gd.load_table(out, 'pairs')
+        if n_pairs != 2 or {r['profile_source'] for r in rows} != {'logged'}:
+            bad.append(f'logged profiles gave {n_pairs} rows: {rows}')
+        elif next(r for r in rows if r['base'] == 'agent_001')['share_E'] != 0.5:
+            bad.append('logged profile columns were read in the wrong order')
+        # learn scoring uses the profiles it is handed instead of recomputing.
+        given = gd.read_logged_profiles(run)[4]
+        sc = learn_score_matrix(['agent_000', 'agent_001'], None, None,
+                                SimpleNamespace(), net, profiles=given)
+        if sc['agent_000']['agent_001'] == sc['agent_001']['agent_000']:
+            bad.append('learn scoring ignored the given profiles')
+
     report('genetic dataset joins pairs to children and trains a model', not bad, bad)
 
 

@@ -282,20 +282,37 @@ def head_prefix_for(args):
 
 
 def generations_on_disk(run_dir):
+    """Generations whose agents all still have their weights.
+
+    --keep-generations prunes the weights of old generations but leaves each
+    agent's agent.json behind, so a gen_N folder can exist with nothing in it
+    to decompose. Only generations with every agent's weights count.
+    """
     ck = os.path.join(run_dir, 'checkpoints')
-    return sorted(int(g.split('_')[1]) for g in os.listdir(ck)
-                  if g.startswith('gen_') and g.split('_')[1].isdigit())
+    gens = []
+    if not os.path.isdir(ck):
+        return gens
+    for g in os.listdir(ck):
+        if not (g.startswith('gen_') and g.split('_')[1].isdigit()):
+            continue
+        gdir = os.path.join(ck, g)
+        agents = [a for a in os.listdir(gdir) if os.path.isdir(os.path.join(gdir, a))]
+        if agents and all(any(f.endswith('.pth.tar')
+                              for f in os.listdir(os.path.join(gdir, a)))
+                          for a in agents):
+            gens.append(int(g.split('_')[1]))
+    return sorted(gens)
 
 
 # --------------------------------------------------------------------------- #
 # Building
 # --------------------------------------------------------------------------- #
 
-def pair_rows(run_id, generation, states, core, args, agents, head_prefix):
-    """Every ordered pair of one generation, profiles from one SVD per pair."""
+def compute_profiles(states, core, args, head_prefix):
+    """{(base, donor): profile} for every ordered pair, one SVD per pair."""
     from sesil.globa_stats import directional_pair_stats
     ids = sorted(states)
-    rows = []
+    out = {}
     for i, a in enumerate(ids):
         for b in ids[i + 1:]:
             a_sees_b, b_sees_a = directional_pair_stats(
@@ -303,26 +320,59 @@ def pair_rows(run_id, generation, states, core, args, agents, head_prefix):
                 eta=args.probe_eta, svd_energy=args.probe_svd_energy,
                 basis_energy=args.probe_basis_energy, head_prefix=head_prefix,
                 weighting=args.probe_layer_weighting)
-            for base, donor, prof in ((a, b, a_sees_b), (b, a, b_sees_a)):
-                pb = agents.get((generation, base), {})
-                pd = agents.get((generation, donor), {})
-                cb, cd = set(pb.get('certificate') or []), set(pd.get('certificate') or [])
-                row = {'run_id': run_id, 'generation': generation,
-                       'base': base, 'donor': donor}
-                row.update({c: float(prof[t]) for c, t in zip(SHARE_COLUMNS, TYPES)})
-                row['novel'] = float(prof.get('_novel', 0.0))
-                row.update({
-                    'base_val_overall': pb.get('val_overall'),
-                    'donor_val_overall': pd.get('val_overall'),
-                    'base_cert_size': len(cb), 'donor_cert_size': len(cd),
-                    'cert_overlap': len(cb & cd),
-                    'base_cert': sorted(cb), 'donor_cert': sorted(cd),
-                })
-                rows.append(row)
+            out[(a, b)], out[(b, a)] = a_sees_b, b_sees_a
+    return out
+
+
+def read_logged_profiles(run_dir):
+    """{generation: {(base, donor): profile}} written by --log-profiles."""
+    out = {}
+    with open(os.path.join(run_dir, 'train.jsonl'), encoding='utf-8') as f:
+        for line in f:
+            if '"profiles"' not in line:
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get('stage') != 'profiles':
+                continue
+            cols = r['columns']
+            gen = {}
+            for row in r['pairs']:
+                d = dict(zip(cols, row))
+                prof = {t: d[t] for t in TYPES}
+                prof['_novel'] = d.get('novel', 0.0)
+                gen[(d['base'], d['donor'])] = prof
+            out[r['generation']] = gen
+    return out
+
+
+def pair_rows(run_id, generation, profiles, agents):
+    """`pairs` rows for one generation from {(base, donor): profile}."""
+    rows = []
+    for (base, donor), prof in sorted(profiles.items()):
+        pb = agents.get((generation, base), {})
+        pd = agents.get((generation, donor), {})
+        cb, cd = set(pb.get('certificate') or []), set(pd.get('certificate') or [])
+        row = {'run_id': run_id, 'generation': generation,
+               'base': base, 'donor': donor}
+        row.update({c: float(prof[t]) for c, t in zip(SHARE_COLUMNS, TYPES)})
+        row['novel'] = float(prof.get('_novel', 0.0))
+        row.update({
+            'base_val_overall': pb.get('val_overall'),
+            'donor_val_overall': pd.get('val_overall'),
+            'base_cert_size': len(cb), 'donor_cert_size': len(cd),
+            'cert_overlap': len(cb & cd),
+            'base_cert': sorted(cb), 'donor_cert': sorted(cd),
+        })
+        rows.append(row)
     return rows
 
 
 def build_pairs(run_dir, run_id, cfg, out_root, device='cpu', log=print):
+    # Profiles are float64 SVDs: CPU is both faster than a consumer GPU and
+    # numerically what evolution computed.
     """pairs + evolution children shards for one run. Skips a finished shard."""
     key = run_key(run_id)
     agents, offspring = read_run_log(run_dir)
@@ -341,23 +391,33 @@ def build_pairs(run_dir, run_id, cfg, out_root, device='cpu', log=print):
         return 0, len(kids)
 
     args = run_args(run_dir, cfg, device=device)
-    core = load_core(run_dir, args.arch, device)
-    head_prefix = head_prefix_for(args)
     mated = {(c['generation'], c['base'], c['donor']) for c in kids}
 
+    # Logged profiles (--log-profiles) cover every generation and are exactly
+    # what evolution computed; weights on disk fill in generations without.
+    logged = read_logged_profiles(run_dir)
+    on_disk = [g for g in generations_on_disk(run_dir) if g not in logged]
+    core = load_core(run_dir, args.arch, device) if on_disk else None
+    head_prefix = head_prefix_for(args) if on_disk else None
+
     rows = []
-    gens = [g for g in generations_on_disk(run_dir)
-            if any(gg == g for (gg, _a) in agents)]
+    gens = sorted(g for g in set(logged) | set(on_disk)
+                  if any(gg == g for (gg, _a) in agents))
     for g in gens:
         t0 = time.time()
-        states = load_states(run_dir, g, args.arch, device)
-        new = pair_rows(run_id, g, states, core, args, agents, head_prefix)
+        if g in logged:
+            profiles, how = logged[g], 'logged'
+        else:
+            states = load_states(run_dir, g, args.arch, device)
+            profiles, how = compute_profiles(states, core, args, head_prefix), 'computed'
+            del states
+        new = pair_rows(run_id, g, profiles, agents)
         for r in new:
             r['mated'] = (g, r['base'], r['donor']) in mated
+            r['profile_source'] = how
         rows.extend(new)
-        log(f'[dataset] {run_id} gen {g}: {len(new)} ordered pairs '
-            f'({time.time() - t0:.1f}s)')
-        del states
+        log(f'[dataset] {run_id} gen {g}: {len(new)} ordered pairs, {how} '
+            f'({time.time() - t0:.1f}s)', flush=True)
     if rows:
         write_table(rows, stem)
     return len(rows), len(kids)
@@ -516,6 +576,7 @@ generation 5), so an agent is identified by (run_id, generation, name), and
 | base_/donor_val_overall | parent's overall validation accuracy that generation |
 | base_/donor_cert(_size), cert_overlap | parents' certificates |
 | mated | whether the run itself bred merge(base, donor) |
+| profile_source | `logged` (written by --log-profiles during the run) or `computed` (from saved weights) |
 
 **children_label**, **children_average** -- one row per measured child
 merge(base, donor), joined to pairs on (run_id, generation, base, donor). Kept
@@ -547,7 +608,8 @@ def write_card(root, runs):
         k = (c.get('merger'), c.get('globa_preset'), c.get('merge_head'), c.get('source'))
         by[k] = by.get(k, 0) + 1
     lines = [f'- pairs: {len(pairs)} ordered pairs, '
-             f'{len({(p["run_id"], p["generation"]) for p in pairs})} populations']
+             f'{len({(p["run_id"], p["generation"]) for p in pairs})} populations, '
+             f'generations {sorted({p["generation"] for p in pairs})}']
     for (m, p, h, s), n in sorted(by.items(), key=lambda kv: str(kv[0])):
         lines.append(f'- children ({m}, preset {p}, head {h}, {s}): {n}')
     with open(os.path.join(root, 'runs.json'), 'w', encoding='utf-8') as f:
