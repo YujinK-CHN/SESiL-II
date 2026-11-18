@@ -88,7 +88,8 @@ def main(argv=None):
                                      seed=a.seed)
             print(f'[dataset]   {n} generated children on disk')
 
-    gd.write_card(a.out, [gd.run_record(run_id, cfg) for _d, run_id, cfg in runs])
+    gd.write_card(a.out, [gd.run_record(run_id, cfg, run_dir)
+                          for run_dir, run_id, cfg in runs])
     print(f'[dataset] done in {time.time() - t0:.0f}s; card at {a.out}/README.md')
     return 0
 

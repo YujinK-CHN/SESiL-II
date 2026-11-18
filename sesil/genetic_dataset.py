@@ -191,8 +191,31 @@ RUN_FIELDS = ('dataset', 'seed', 'arch', 'pop_size', 'phase_a_method',
               'probe_layer_weighting', 'val_fraction', 'budget')
 
 
-def run_record(run_id, cfg):
+def count_generations(run_dir):
+    """Generations the run actually evaluated (0 .. n-1), from its log.
+
+    Runs differ in length -- the budget buys a different number of
+    generations depending on settings -- so a generation index only says how
+    far into evolution it is relative to this count.
+    """
+    gens = set()
+    with open(os.path.join(run_dir, 'train.jsonl'), encoding='utf-8') as f:
+        for line in f:
+            if '"population"' not in line:
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get('stage') == 'population':
+                gens.add(r['generation'])
+    return max(gens) + 1 if gens else 0
+
+
+def run_record(run_id, cfg, run_dir=None):
     rec = {'run_id': run_id, 'experiment': run_id.split('/')[0]}
+    if run_dir is not None:
+        rec['n_generations'] = count_generations(run_dir)
     rec.update({k: cfg.get(k) for k in RUN_FIELDS})
     return rec
 
@@ -592,7 +615,9 @@ different accuracy, so mixing them would mix two outcomes.
 | child_cert, child_val_per_class | inherited certificate, per-class validation accuracy |
 | source | `evolution` (bred during the run) or `generated` (built afterwards) |
 
-**runs.json** -- the settings of every source run.
+**runs.json** -- the settings of every source run, and `n_generations`, how
+many generations it ran (0 .. n-1), so a row's `generation` can be read as
+how far into that run's evolution it is.
 
 ## Counts
 
