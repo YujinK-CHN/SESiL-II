@@ -184,10 +184,14 @@ def _breed_globa(pairs, loners, population_info, models, args, data,
         cert = inherit([by_id[p]['Certificate'] for p in pair])
 
         # Twice, swapping base and donor: two children, one leaning each way.
-        # Under --mating-mode learn the pair is an ordered (base, donor)
+        # This includes --mating-mode learn with --learn-pairing mutual:
+        # merge(a, b) replaces a and merge(b, a) replaces b. Under
+        # --learn-pairing engineer the pair is an ordered (base, donor)
         # combination with ONE child, which replaces the base; the donor is
         # among the loners and carries on unchanged.
-        directions = ((pair,) if args.mating_mode == 'learn'
+        engineer = (args.mating_mode == 'learn'
+                    and getattr(args, 'learn_pairing', 'mutual') == 'engineer')
+        directions = ((pair,) if engineer
                       else (pair, tuple(reversed(pair))))
         for head_index, (base, donor) in enumerate(directions):
             start = time.time()
@@ -717,6 +721,7 @@ def run_evolution(args, budget, data, logger, evaluator):
                 'mate_floor': args.mate_floor,
                 'abstained': mate_stats.get('abstained', 0),      # agent-rounds
                 'abstainers': mate_stats.get('abstainers', 0),    # agents
+                'couples_per_round': mate_stats.get('couples_per_round'),
             })
 
             offspring = breed(pairs, loners, population_info, models, raw_config,

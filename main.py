@@ -90,6 +90,9 @@ def main(argv=None):
               'subset_mode': args.subset_mode if args.method == 'sesil' else None,
               'mating_rounds': args.mating_rounds if args.method == 'sesil' else None,
               'mate_floor': args.mate_floor if args.method == 'sesil' else None,
+              'learn_pairing': (args.learn_pairing
+                                if args.method == 'sesil'
+                                and args.mating_mode == 'learn' else None),
               'phase_c_rank_weight': (args.phase_c_rank_weight
                                       if args.method == 'sesil'
                                       and args.mating_mode == 'learn' else None),

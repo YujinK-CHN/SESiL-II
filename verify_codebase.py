@@ -979,6 +979,37 @@ def check_learn_mating(report):
     if len(combos) != len(ids) // 2:
         bad.append(f'floor 0 mated {len(combos)}, expected {len(ids) // 2}')
 
+    # --- learn-pairing mutual: reciprocated first choices, in rounds ---
+    # a and b want each other; c wants a (taken in round 1) and so pairs with
+    # d only in round 2; e and f want each other.
+    mutual = {x: {y: 0.1 for y in ids if y != x} for x in ids}
+    for x, y, v in (('a', 'b', 0.9), ('b', 'a', 0.9), ('c', 'a', 0.9),
+                    ('c', 'd', 0.5), ('d', 'c', 0.9), ('e', 'f', 0.9),
+                    ('f', 'e', 0.9)):
+        mutual[x][y] = v
+    margs = SimpleNamespace(mating_mode='learn', learn_pairing='mutual',
+                            mate_floor=0.0, mating_rounds=15,
+                            hybrid_tolerance=0.15)
+    mstats = {}
+    pairs, loners = selection.select_mates([], margs, scores=mutual,
+                                           stats=mstats)
+    if sorted(pairs) != [('a', 'b'), ('c', 'd'), ('e', 'f')] or loners:
+        bad.append(f'mutual pairing took {pairs}, loners {loners}')
+    if mstats.get('couples_per_round') != [2, 1]:
+        bad.append(f'mutual couples per round {mstats.get("couples_per_round")}'
+                   f', expected [2, 1]')
+    # c's only partner left (d) is predicted below the floor: c abstains.
+    margs.mate_floor = 0.6
+    pairs, loners = selection.select_mates([], margs, scores=mutual)
+    if sorted(pairs) != [('a', 'b'), ('e', 'f')] or sorted(loners) != ['c', 'd']:
+        bad.append(f'mutual pairing ignored the floor: {pairs}, {loners}')
+    # engineer is still the global ranking with one child per combination.
+    eargs = SimpleNamespace(mating_mode='learn', learn_pairing='engineer',
+                            mate_floor=0.5, mating_rounds=15)
+    combos, carried = selection.select_mates([], eargs, scores=scores)
+    if combos != [('a', 'b'), ('d', 'c')]:
+        bad.append(f'engineer pairing took {combos}')
+
     # --- selection must refuse to invent the matrix itself ---
     args = SimpleNamespace(mating_mode='learn', mate_floor=0.5,
                            mating_rounds=15, weight_extra=1.0,

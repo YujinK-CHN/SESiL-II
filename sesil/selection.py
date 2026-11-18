@@ -541,14 +541,16 @@ def select_mates(population_info, args, scores=None, tiebreak=None,
 
     Returns (pairs, loners).
     """
-    if args.mating_mode == 'learn':
-        if scores is None:
-            raise ValueError(
-                '--mating-mode learn needs the predicted-quality matrix from '
-                'the caller; it comes from the fitted pair-quality net and '
-                'the GLOBA decomposition, neither of which selection has.')
-        # Returns ordered (base, donor) combinations, one child each; the
-        # donors come back among the carried agents.
+    learn = args.mating_mode == 'learn'
+    if learn and scores is None:
+        raise ValueError(
+            '--mating-mode learn needs the predicted-quality matrix from '
+            'the caller; it comes from the fitted pair-quality net and '
+            'the GLOBA decomposition, neither of which selection has.')
+    if learn and getattr(args, 'learn_pairing', 'mutual') == 'engineer':
+        # One global ranking of ordered (base, donor) combinations, assigned
+        # greedily, one child each; the donors come back among the carried
+        # agents.
         agents = list(scores.keys())
         combinations, carried, refused = rank_combinations(
             scores, getattr(args, 'mate_floor', 0.0), agents)
@@ -565,7 +567,10 @@ def select_mates(population_info, args, scores=None, tiebreak=None,
                                     **_score_kwargs(args))
 
     hybrid = args.mating_mode == 'hybrid' and tiebreak is not None
-    deterministic = args.mating_mode == 'globa' or hybrid
+    # learn + mutual: each agent ranks its own row -- score(a, b) is the
+    # predicted child when a is the BASE -- and takes its argmax; reciprocated
+    # first choices become couples, round after round, as in the other modes.
+    deterministic = args.mating_mode == 'globa' or hybrid or learn
     agents = list(scores.keys())
     n_agents = len(agents)
 
@@ -580,6 +585,10 @@ def select_mates(population_info, args, scores=None, tiebreak=None,
     floor = getattr(args, 'mate_floor', 0.0)
     if floor <= 0:
         gate = {}
+    elif learn:
+        # The prediction is its own gate: a partner whose child with this
+        # agent as base is predicted below the floor is not considered.
+        gate = scores
     elif gate is None:
         # Certificate ranking: the gate is certificate value, built here.
         # GLOBA ranking: the caller supplies donor novelty instead, because it
@@ -603,6 +612,7 @@ def select_mates(population_info, args, scores=None, tiebreak=None,
     # distinct count sits beside it.
     abstained = 0
     abstainers = set()
+    per_round = []
 
     for _ in range(max(args.mating_rounds, 1)):
         pool = [m for m in agents if m not in paired]
@@ -644,6 +654,7 @@ def select_mates(population_info, args, scores=None, tiebreak=None,
                     new_pairs.append(tuple(sorted((a, b))))
                     paired.update([a, b])
         pairs.extend(new_pairs)
+        per_round.append(len(new_pairs))
 
         # Deterministic choice cannot change its mind: if this round paired
         # nobody, every later round sees the same pool and the same rankings.
@@ -653,6 +664,7 @@ def select_mates(population_info, args, scores=None, tiebreak=None,
     if stats is not None:
         stats['abstained'] = abstained              # agent-rounds
         stats['abstainers'] = len(abstainers)       # distinct agents
+        stats['couples_per_round'] = per_round
 
     loners = [m for m in agents if m not in paired]
 

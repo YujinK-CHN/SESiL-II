@@ -579,6 +579,22 @@ def _add_selection_config(parser):
     group.add_argument('--phase-c-lr', type=float, default=0.01,
                        help='LEARNED MATING ONLY. Adam learning rate for the '
                             'mating function.')
+    group.add_argument('--learn-pairing', type=str, default='mutual',
+                       choices=['mutual', 'engineer'],
+                       help='LEARN MODE ONLY. How the mating network\'s '
+                            'predictions pair agents. score(a, b) is the '
+                            'predicted child merge(a, b), a the base. '
+                            '\'mutual\' (default): each agent picks the '
+                            'partner with its best score; reciprocated first '
+                            'choices become couples, the rest choose again '
+                            'from the remaining pool, up to --mating-rounds. '
+                            'A couple has two children, merge(a, b) replacing '
+                            'a and merge(b, a) replacing b. \'engineer\': one '
+                            'global ranking of all ordered combinations, '
+                            'taken best first, each agent once; one child per '
+                            'combination, which replaces its base, and the '
+                            'donor carries on. Runs before this flag existed '
+                            'used engineer.')
     group.add_argument('--phase-c-rank-weight', type=float, default=0.0,
                        help='LEARN MODE ONLY. Weight of the within-society '
                             'ranking term in the mating network\'s loss. 0 '
@@ -923,10 +939,10 @@ def validate(args):
         raise SystemExit(
             f'Conflicting settings: --mating-mode learn with --merger '
             f'{args.merger}.\n'
-            f'Learn mode mates ordered (base, donor) combinations with ONE '
-            f'child each, which replaces the base. Only the asymmetric GLOBA '
-            f'operator builds a single directed child; the other mergers '
-            f'always make two. Use --merger globa.')
+            f'Learn mode predicts the child of an ORDERED (base, donor) '
+            f'combination, merge(base, donor), and builds exactly that child. '
+            f'Only the asymmetric GLOBA operator builds a directed child; the '
+            f'other mergers do not. Use --merger globa.')
 
     if args.mating_mode == 'learn' and args.phase_c_populations < 1:
         raise SystemExit(
