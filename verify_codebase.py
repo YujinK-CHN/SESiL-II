@@ -940,7 +940,7 @@ def check_learn_mating(report):
     if rho < 0.7:
         bad.append(f'failed to recover a planted quality ordering (rho {rho:.2f})')
 
-    # --- ordered combinations: best first, each agent once, base replaced ---
+    # --- engineer: best first, base once, donor unlimited, base replaced ---
     ids = ['a', 'b', 'c', 'd', 'e', 'f']
     scores = {x: {y: 0.1 for y in ids if y != x} for x in ids}
     scores['a']['b'] = 0.9
@@ -953,11 +953,28 @@ def check_learn_mating(report):
     # Bases are replaced by their child; donors and unmated agents carry on.
     if sorted(carried) != ['b', 'c', 'e', 'f']:
         bad.append(f'wrong carried agents: {carried}')
-    seen = [m for combo in combos for m in combo]
-    if len(seen) != len(set(seen)):
-        bad.append(f'an agent mated twice: {combos}')
+    bases_seen = [a for a, _b in combos]
+    if len(bases_seen) != len(set(bases_seen)):
+        bad.append(f'an agent was a base twice: {combos}')
     if len(combos) + len(carried) != len(ids):
         bad.append('population size not held: one child per combination')
+
+    # Donors are unlimited: a and b may both take c as their donor...
+    shared = {x: {y: 0.1 for y in ids if y != x} for x in ids}
+    shared['a']['c'] = 0.9
+    shared['b']['c'] = 0.8
+    combos, carried, _ = selection.rank_combinations(shared, floor=0.5,
+                                                     agent_ids=ids)
+    if combos != [('a', 'c'), ('b', 'c')] or sorted(carried) != ['c', 'd', 'e', 'f']:
+        bad.append(f'a shared donor was refused: {combos}, carried {carried}')
+    # ...and a donor may be a base in its own combination too.
+    chain = {x: {y: 0.1 for y in ids if y != x} for x in ids}
+    chain['a']['b'] = 0.9
+    chain['b']['c'] = 0.8
+    combos, carried, _ = selection.rank_combinations(chain, floor=0.5,
+                                                     agent_ids=ids)
+    if combos != [('a', 'b'), ('b', 'c')] or sorted(carried) != ['c', 'd', 'e', 'f']:
+        bad.append(f'a donor was barred from being a base: {combos}')
 
     # Order matters: (b, a) scores on its own, not on (a, b).
     one = {x: {y: 0.0 for y in ids if y != x} for x in ids}
@@ -973,11 +990,11 @@ def check_learn_mating(report):
     if combos or len(carried) != len(ids):
         bad.append(f'floor above every prediction still mated {combos}')
 
-    # A floor of 0 mates as many as possible.
-    combos, _carried, _ = selection.rank_combinations(scores, floor=0.0,
-                                                      agent_ids=ids)
-    if len(combos) != len(ids) // 2:
-        bad.append(f'floor 0 mated {len(combos)}, expected {len(ids) // 2}')
+    # A floor of 0 makes every agent a base, each with its best donor.
+    combos, carried, _ = selection.rank_combinations(scores, floor=0.0,
+                                                     agent_ids=ids)
+    if len(combos) != len(ids) or carried:
+        bad.append(f'floor 0 took {len(combos)} bases, expected {len(ids)}')
 
     # --- learn-pairing mutual: reciprocated first choices, in rounds ---
     # a and b want each other; c wants a (taken in round 1) and so pairs with

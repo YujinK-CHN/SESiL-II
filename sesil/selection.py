@@ -187,12 +187,19 @@ def rank_combinations(scores, floor, agent_ids=None):
     scores[a][b] is the predicted accuracy of the ONE child merge(a, b), and
     (b, a) is a different combination with a different child. A combination
     is approved when its prediction reaches `floor`; approved ones are taken
-    best first, and one is skipped if either agent has already mated, so each
-    agent mates at most once. Ties break on agent id so a run is reproducible.
+    best first. An agent is a BASE at most once -- a later combination with
+    the same base is skipped -- but may be a DONOR without limit, including
+    while it is a base itself. Every child is merged from the parents' weights
+    as they were before this generation's matings. Ties break on agent id so a
+    run is reproducible.
 
-    The child replaces its base. The donor carries on unchanged, so it is
-    returned with the unmated agents in `carried`, and the population size
-    holds: len(combinations) + len(carried) == len(agent_ids).
+    Because only bases are exclusive, this is the same as every agent taking
+    its own best donor when that prediction reaches the floor; the global
+    order only fixes the order the combinations are listed in.
+
+    The child replaces its base. An agent that was never a base carries on
+    unchanged -- donor or not -- so it is returned in `carried`, and the
+    population size holds: len(combinations) + len(carried) == len(agent_ids).
 
     Returns (combinations, carried, refused), where combinations are ordered
     (base, donor) tuples and refused counts the combinations below the floor.
@@ -207,17 +214,16 @@ def rank_combinations(scores, floor, agent_ids=None):
             ranked.append((float(ab), a, b))
     ranked.sort(key=lambda r: (-r[0], r[1], r[2]))
 
-    taken, combinations = set(), []
+    bases, combinations = set(), []
     refused = sum(1 for r in ranked if r[0] < floor)
     for value, a, b in ranked:
         if value < floor:
             # Ranked, so everything after this is worse: stop rather than scan.
             break
-        if a in taken or b in taken:
+        if a in bases:
             continue
         combinations.append((a, b))
-        taken.update((a, b))
-    bases = {a for a, _b in combinations}
+        bases.add(a)
     carried = [m for m in ids if m not in bases]
     return combinations, carried, refused
 
@@ -548,15 +554,17 @@ def select_mates(population_info, args, scores=None, tiebreak=None,
             'the caller; it comes from the fitted pair-quality net and '
             'the GLOBA decomposition, neither of which selection has.')
     if learn and getattr(args, 'learn_pairing', 'mutual') == 'engineer':
-        # One global ranking of ordered (base, donor) combinations, assigned
-        # greedily, one child each; the donors come back among the carried
-        # agents.
+        # One global ranking of ordered (base, donor) combinations, one child
+        # each; an agent is a base once, a donor any number of times, and
+        # every non-base comes back among the carried agents.
         agents = list(scores.keys())
         combinations, carried, refused = rank_combinations(
             scores, getattr(args, 'mate_floor', 0.0), agents)
         if stats is not None:
             stats['abstained'] = refused
-            stats['abstainers'] = len(agents) - 2 * len(combinations)
+            # Agents in no combination at all, neither base nor donor.
+            stats['abstainers'] = len(set(agents) - {m for c in combinations
+                                                      for m in c})
         assert len(combinations) + len(carried) == len(agents), (
             f'Population size mismatch: {len(combinations) + len(carried)} '
             f'!= {len(agents)}')

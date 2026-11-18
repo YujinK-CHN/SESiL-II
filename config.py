@@ -591,10 +591,11 @@ def _add_selection_config(parser):
                             'A couple has two children, merge(a, b) replacing '
                             'a and merge(b, a) replacing b. \'engineer\': one '
                             'global ranking of all ordered combinations, '
-                            'taken best first, each agent once; one child per '
-                            'combination, which replaces its base, and the '
-                            'donor carries on. Runs before this flag existed '
-                            'used engineer.')
+                            'taken best first; an agent is a base at most '
+                            'once but a donor any number of times. One child '
+                            'per combination, which replaces its base; donors '
+                            'carry on. Runs before this flag existed used an '
+                            'older engineer in which each agent mated once.')
     group.add_argument('--phase-c-rank-weight', type=float, default=0.0,
                        help='LEARN MODE ONLY. Weight of the within-society '
                             'ranking term in the mating network\'s loss. 0 '
