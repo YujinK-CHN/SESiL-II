@@ -1,7 +1,8 @@
 """
 Dataset generator entry point: a copy of main.py that runs datagen/evolution.py
 (a copy of sesil/evolution.py that also writes <run_dir>/samples.csv) in place
-of sesil/evolution.py. GLOBA mating and GLOBA merging only. Launched by
+of sesil/evolution.py. GLOBA mating and GLOBA merging only; the baseline,
+probe and phase-C paths of main.py are removed. Launched by
 generate_dataset.sh -> submit.sh -> run.sh -> run_datagen.sh.
 
 The original main.py docstring follows.
@@ -141,16 +142,7 @@ def main(argv=None):
     _print_banner(args, data, budget)
 
     try:
-        if args.method == 'sesil':
-            result = _run_sesil(args, budget, data, logger, evaluator)
-        elif args.method == 'baseline':
-            from sesil.baseline import run_baseline
-            result = run_baseline(args, budget, data, logger, evaluator)
-        elif args.method == 'probe':
-            from sesil.probe.driver import run_probe
-            result = run_probe(args, budget, data, logger, evaluator)
-        else:
-            raise ValueError(f'Unknown method {args.method!r}')
+        result = _run_sesil(args, budget, data, logger, evaluator)
     finally:
         # Written whatever happens, so a crashed run still records what it spent.
         with open(os.path.join(args.run_dir, 'config.json'), 'w') as f:
@@ -179,52 +171,31 @@ def _print_banner(args, data, budget):
     print(f'eval every : {args.eval_interval} epoch-equivalents '
           f'(~{int(args.budget / max(args.eval_interval, 1e-9)) + 1} points)')
 
-    if args.method == 'probe':
-        n_pairs = args.pop_size * (args.pop_size - 1) // 2
-        stop = args.stop_node if args.stop_node is not None else 'none / full merge'
-        print(f'setting    : mate-screening probe (NOT a learning method)')
-        print(f'merger     : {args.merger}  (stop-node {stop})  <- under test')
-        print(f'population : {args.pop_size} x {args.classes_per_model} classes')
-        print(f'  -> {n_pairs} pairs, {2 * n_pairs} children to evaluate')
-        print(f'pretrain   : mode {args.pretrain_mode}, '
-              f'{estimate_pretrain_cost(args):.2f} epoch-equiv')
-        # Said plainly because --budget is run.sh's headline knob and here it
-        # controls nothing: the probe never trains, so nothing consumes it.
-        # Pretrain is sized by --pretrain-budget, which is independent of it.
-        print(f'NOTE: --budget is INERT in this setting -- the probe does not '
-              f'train, so nothing\n      spends it. Pretrain is sized by '
-              f'--pretrain-budget ({args.pretrain_budget:g}); the rest of the '
-              f'cost is\n      {n_pairs} merges and {2 * n_pairs} evaluations, '
-              f'which scale with --pop-size squared.')
-    elif args.method == 'sesil':
-        pre = estimate_pretrain_cost(args)
-        per_gen = estimate_generation_cost(args)
-        gens = estimate_generations(args)
-        per_agent = samples_for(args.individual_budget, budget.train_set_size)
-        stop = args.stop_node if args.stop_node is not None else 'none / full merge'
-        print(f'merger     : {args.merger}  (stop-node {stop})')
-        print(f'population : {args.pop_size} x {args.classes_per_model} classes')
-        from sesil.pretrain import cost_multiplier, phase_budgets
-        from sesil.ssl import uses_labels
-        phase_a, phase_b = phase_budgets(args)
-        print(f'pretrain   : mode {args.pretrain_mode}, {pre:.2f} epoch-equiv total')
-        if phase_a <= 0:
-            print(f'    (no phase A -- every agent trained from scratch on its '
-                  f'own subset, {phase_b / max(args.pop_size, 1):.3f} each)')
-        else:
-            mult = cost_multiplier(args)
-            labels = 'uses labels' if uses_labels(args.phase_a_method) else 'label-free'
-            print(f'    phase A       {phase_a:.2f}  shared backbone: '
-                  f'{args.phase_a_method} ({labels}), cost x{mult:g}')
-            print(f'    phase B       {phase_b:.2f}  '
-                  f'{phase_b / max(args.pop_size, 1):.3f} per agent')
-        print(f'  per agent/gen   {args.individual_budget:.3f} epoch-equiv '
-              f'= {per_agent} sample-presentations')
-        print(f'  per generation  {per_gen:.2f} epoch-equiv ({args.pop_size} agents)')
-        print(f'  -> {gens} generations from a budget of {args.budget:g}')
+    pre = estimate_pretrain_cost(args)
+    per_gen = estimate_generation_cost(args)
+    gens = estimate_generations(args)
+    per_agent = samples_for(args.individual_budget, budget.train_set_size)
+    stop = args.stop_node if args.stop_node is not None else 'none / full merge'
+    print(f'merger     : {args.merger}  (stop-node {stop})')
+    print(f'population : {args.pop_size} x {args.classes_per_model} classes')
+    from sesil.pretrain import cost_multiplier, phase_budgets
+    from sesil.ssl import uses_labels
+    phase_a, phase_b = phase_budgets(args)
+    print(f'pretrain   : mode {args.pretrain_mode}, {pre:.2f} epoch-equiv total')
+    if phase_a <= 0:
+        print(f'    (no phase A -- every agent trained from scratch on its '
+              f'own subset, {phase_b / max(args.pop_size, 1):.3f} each)')
     else:
-        print(f'mode       : {args.baseline_mode}')
-        print(f'  -> {args.baseline_epochs} epochs')
+        mult = cost_multiplier(args)
+        labels = 'uses labels' if uses_labels(args.phase_a_method) else 'label-free'
+        print(f'    phase A       {phase_a:.2f}  shared backbone: '
+              f'{args.phase_a_method} ({labels}), cost x{mult:g}')
+        print(f'    phase B       {phase_b:.2f}  '
+              f'{phase_b / max(args.pop_size, 1):.3f} per agent')
+    print(f'  per agent/gen   {args.individual_budget:.3f} epoch-equiv '
+          f'= {per_agent} sample-presentations')
+    print(f'  per generation  {per_gen:.2f} epoch-equiv ({args.pop_size} agents)')
+    print(f'  -> {gens} generations from a budget of {args.budget:g}')
     print('=' * 70)
 
 
@@ -251,19 +222,6 @@ def _run_sesil(args, budget, data, logger, evaluator):
         print('[main] --pretrain-only set; stopping after pretrain.')
         print(budget.report())
         return None
-
-    # Stage 1c: phase C, which fits the mating function on merges it measures
-    # from the pretrained population. Only --globa-with learned needs it, and
-    # it runs before evolution because the rule has to exist by generation 0.
-    # Its cost is forward-only, so it does not eat the backprop budget, but it
-    # is charged and reported like every other forward pass.
-    # A learn run given --mating-model mates on that trained network and has
-    # nothing to fit, so phase C (and its budget) is skipped.
-    if (args.globa_with == 'learned'
-            or (args.mating_mode == 'learn' and not args.mating_model)) \
-            and args.start_gen == 0:
-        from sesil.phase_c import run_phase_c
-        run_phase_c(args, budget, data, logger)
 
     # Stage 2: evolution, until the budget runs out.
     return run_evolution(args, budget, data, logger, evaluator)

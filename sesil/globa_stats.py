@@ -35,7 +35,6 @@ are skipped.
 All linear algebra in float64.
 """
 
-import numpy as np
 import torch
 
 

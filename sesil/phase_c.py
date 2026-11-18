@@ -22,7 +22,6 @@ samples pairs rather than taking all of them.
 """
 
 import itertools
-import json
 import os
 import random
 import time
@@ -35,7 +34,6 @@ from config import build_raw_config
 from utils import reset_bn_stats
 
 from sesil import mating_fn
-from sesil.budget import FORWARD_TRAIN_PASSES_PER_MERGE
 from sesil.certificate import certify_population
 from sesil.fitness import evaluate_all_classes, summarise
 from sesil.globa_merge import merge as globa_merge_pair

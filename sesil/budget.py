@@ -76,10 +76,6 @@ class BudgetTracker:
         self.by_stage[stage] += cost
         return cost
 
-    def spend_epochs(self, stage, epochs):
-        """Charge `epochs` passes over the full training set."""
-        return self.spend_samples(stage, self.train_set_size, epochs)
-
     # ------------------------------------------------------------------ #
     # Counted but not charged
     # ------------------------------------------------------------------ #

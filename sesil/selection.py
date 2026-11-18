@@ -175,11 +175,8 @@ def pair_profiles(agent_ids, states, core, args):
     return out
 
 
-def learn_score_matrix(agent_ids, states, core, args, net, profiles=None):
+def learn_score_matrix(agent_ids, states, core, args, net):
     """scores[a][b] = predicted quality of the child merge(a, b).
-
-    `profiles`, from pair_profiles, skips the decomposition when the caller
-    has already done it (--log-profiles does, every generation).
 
     Same decomposition as globa_score_matrix -- one SVD per analysable layer
     per pair, both directions from it -- but the shares are fed to the fitted
@@ -188,8 +185,7 @@ def learn_score_matrix(agent_ids, states, core, args, net, profiles=None):
     measured, which is what lets --mate-floor be an absolute statement about
     offspring quality rather than a position in a ranking.
     """
-    if profiles is None:
-        profiles = pair_profiles(agent_ids, states, core, args)
+    profiles = pair_profiles(agent_ids, states, core, args)
     # Asymmetric: merge(a, b) and merge(b, a) are different children and get
     # different predictions.
     scores = {a: {} for a in agent_ids}

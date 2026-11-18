@@ -3,8 +3,7 @@ Checks for the dataset generator (datagen/). Run: python -m datagen.verify
 
   1. samples.csv: columns, n_generations and location filled at the end.
   2. GLOBA mating scores taken from the profiles equal globa_score_matrix's.
-  3. datagen/evolution.py differs from sesil/evolution.py only by [datagen]
-     additions (no line of the original removed).
+  3. (info) how many lines of sesil/evolution.py the copy replaces or removes.
 """
 
 import csv
@@ -99,10 +98,10 @@ def main():
     print(('PASS' if ok2 else 'FAIL') + '  mating scores from profiles == '
           'globa_score_matrix' + ('' if ok2 else f' (differ for {bad})'))
     removed, n = check_copy()
-    # Lines replaced in the copy, each by a [datagen] block.
-    print(f'INFO  datagen/evolution.py replaces {n} line(s) of sesil/evolution.py:')
-    for l in removed:
-        print('        ' + l)
+    # Lines of the original replaced or removed in the copy ([datagen] blocks,
+    # and the mating modes / mergers the generator never runs).
+    print(f'INFO  datagen/evolution.py replaces or removes {n} line(s) of '
+          f'sesil/evolution.py')
     return 0 if ok1 and ok2 else 1
 
 

@@ -326,14 +326,6 @@ def _add_evolution_config(parser):
                             'entropy, agreement, or a voting rule invented '
                             'later. Off by default because it is the only '
                             'thing here that costs real disk.')
-    group.add_argument('--log-profiles', action='store_true',
-                       help='Each generation, write the genetic profile (six '
-                            'GLOBA shares + novelty) of every ordered pair to '
-                            'train.jsonl. The genetic-learning dataset can then '
-                            'use every generation of the run without keeping '
-                            'its weights. Needs --pretrain-mode ssl. About 1 s '
-                            'of CPU per pair (190 pairs at --pop-size 20); no '
-                            'training budget is spent.')
     group.add_argument('--keep-generations', type=int, default=2,
                        help='How many of the most recent generation directories to '
                             'keep on disk. Generation 0 is always kept -- it is the '
@@ -396,8 +388,6 @@ def _add_merging_config(parser):
                        help="ZipIt! alpha ('a'), Section 4.3 of the ZipIt! paper.")
     group.add_argument('--merge-beta', type=float, default=0.075,
                        help="ZipIt! beta ('b'), Section 4.3 of the ZipIt! paper.")
-    group.add_argument('--reduce-ratio', type=float, default=0.5,
-                       help='Feature-space reduction ratio for the merge.')
     group.add_argument('--merging-metrics', type=str, default='covariance,mean',
                        help='Comma-separated alignment metrics to accumulate.')
 
@@ -588,8 +578,8 @@ def _add_selection_config(parser):
                        help='LEARNED MATING ONLY. Adam learning rate for the '
                             'mating function.')
     group.add_argument('--mating-model', type=str, default=None,
-                       help='LEARN MODE ONLY. A mating network trained by '
-                            'train_mating.py (mating_models/<name>/'
+                       help='LEARN MODE ONLY. A trained mating network '
+                            '(mating_models/<name>/'
                             'pair_quality.pt). Given, phase C is skipped and '
                             'evolution mates on this model; not given, phase '
                             'C fits one for this run as before.')

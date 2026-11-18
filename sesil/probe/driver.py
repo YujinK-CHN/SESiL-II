@@ -75,14 +75,6 @@ def _load_core(args):
     return torch.load(path, map_location='cpu')
 
 
-def _load_state(population_dir, agent_id, arch):
-    path = os.path.join(population_dir, agent_id, f'{arch}.pth.tar')
-    if not os.path.exists(path):
-        path = os.path.join(population_dir, agent_id, f'{arch}_v0.pth.tar')
-    sd = torch.load(path, map_location='cpu')
-    return sd['state_dict'] if isinstance(sd, dict) and 'state_dict' in sd else sd
-
-
 def _load_agent(agent_id, raw_config, data, budget):
     """Materialise one agent with BN statistics recalibrated on the train split."""
     point_at(raw_config, [agent_id])

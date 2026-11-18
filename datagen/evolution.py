@@ -17,7 +17,10 @@ Changes from sesil/evolution.py, all marked [datagen]:
     generation and reused by GLOBA mating (same numbers, not done twice);
   * _breed_globa carries each bred child's parents and accuracy, so those
     children are reused rather than rebuilt;
-  * _collect_pair_children + the samples.csv writers; called after breeding.
+  * _collect_pair_children + the samples.csv writers; called after breeding;
+  * only GLOBA mating and GLOBA merging are kept: the other mating modes,
+    the other mergers, learn mode and phase C are removed, since
+    generate_dataset.py refuses them.
 
 The original module docstring follows.
 
@@ -64,7 +67,6 @@ from utils import prepare_experiment_config, reset_bn_stats
 from sesil.budget import (
     FORWARD_TRAIN_PASSES_PER_EVAL,
     FORWARD_TRAIN_PASSES_PER_LONER,
-    FORWARD_TRAIN_PASSES_PER_MERGE,
     samples_for,
 )
 from sesil.certificate import (
@@ -74,12 +76,12 @@ from sesil.certificate import (
     training_classes,
 )
 from sesil.fitness import evaluate_all_classes, summarise
-from sesil.merge import extract_children, merge_couple, point_at
+from sesil.merge import point_at
 from sesil.mutation import mutate
 from sesil.population import (generation_dir, list_population,
                               prune_generations, save_agent)
-from sesil.selection import (LazyGlobaScores, globa_score_matrix, select_mates,
-                             strength_matrix)
+from sesil.selection import (_globa_value, pair_profiles,   # [datagen]
+                             select_mates, strength_matrix)
 from sesil.ssl import classifier_name
 
 
@@ -319,15 +321,7 @@ def _breed_globa(pairs, loners, population_info, models, args, data,
         cert = inherit([by_id[p]['Certificate'] for p in pair])
 
         # Twice, swapping base and donor: two children, one leaning each way.
-        # This includes --mating-mode learn with --learn-pairing mutual:
-        # merge(a, b) replaces a and merge(b, a) replaces b. Under
-        # --learn-pairing engineer the pair is an ordered (base, donor)
-        # combination with ONE child, which replaces the base; the donor is
-        # among the loners and carries on unchanged.
-        engineer = (args.mating_mode == 'learn'
-                    and getattr(args, 'learn_pairing', 'mutual') == 'engineer')
-        directions = ((pair,) if engineer
-                      else (pair, tuple(reversed(pair))))
+        directions = (pair, tuple(reversed(pair)))
         for head_index, (base, donor) in enumerate(directions):
             start = time.time()
             child_sd = globa_merge(
@@ -397,105 +391,9 @@ def _breed_globa(pairs, loners, population_info, models, args, data,
 
 def breed(pairs, loners, population_info, models, raw_config, args, data,
           budget, logger, generation, globa_core=None):
-    """Merge every couple, carry every loner.
-
-    A couple always yields one child per parent, so the population size holds.
-    What makes the two siblings differ depends on the operator:
-
-      zipit / permute / wavg
-          One merge produces a composite; children differ by which parent's
-          head is spliced onto the shared trunk (with a stop node) or by the
-          interpolation weight (without one).
-
-      globa
-          The operator is itself asymmetric -- the base parent is kept whole
-          and selected components of the donor are added -- so the couple is
-          merged TWICE, once each way. merge(a, b) leans to a, merge(b, a)
-          leans to b, with nothing invented to tell them apart.
-    """
-    by_id = {p['Model Name']: p for p in population_info}
-    model_by_id = dict(zip([p['Model Name'] for p in population_info], models))
-
-    val_loader = data.val_loader()
-    train_loader = data.train_loader()
-    offspring = []
-
-    if args.merger == 'globa':
-        return _breed_globa(pairs, loners, population_info, models, args, data,
-                            budget, logger, generation, globa_core)
-
-    for pair in tqdm(pairs, desc=f'Gen {generation}: merging couples'):
-        merge, config = merge_couple(pair, raw_config, args, train_loader)
-        budget.count_forward_train(FORWARD_TRAIN_PASSES_PER_MERGE)
-
-        # The parents' certificates decide which classifier rows the child
-        # inherits whole under --merge-head label. The certificate is the right
-        # set here rather than what each parent last trained on: it is measured
-        # proficiency, and the child's own inherited certificate is the union of
-        # these two, so the head and the licence agree about what the child can
-        # do.
-        parent_certs = [by_id[p]['Certificate'] for p in pair]
-        children = extract_children(merge, config, args, args.num_classes,
-                                    train_loader, parent_classes=parent_certs)
-        budget.count_forward_train(len(children))   # BN recalibration per child
-
-        cert = inherit([by_id[p]['Certificate'] for p in pair])
-
-        for head_index, (child, n_from_trunk, label_rows) in enumerate(children):
-            # Evaluate the model that will actually be saved, not the composite.
-            per_class, overall = evaluate_all_classes(child, val_loader, args.num_classes)
-
-            logger.log_train({
-                'stage': 'offspring',
-                'generation': generation,
-                'budget': round(budget.spent, 4),
-                'parents': list(pair),
-                'head': head_index,
-                'trunk_params': n_from_trunk,
-                # 0 in 'average' mode; otherwise how many classifier rows were
-                # taken whole from the single parent certified for that class.
-                'label_head_rows': label_rows,
-                'certificate': sorted(cert),
-                'val_overall': overall,
-                'val_per_class': [round(v, 5) for v in per_class],
-                'merge_seconds': merge.compute_transform_time,
-            })
-
-            offspring.append({
-                'model': child,
-                'certificate': cert,
-                'parents': list(pair),
-                'head': head_index,
-                'is_loner': False,
-                # Carried so --mutation-mode best/worse can pick an exploration
-                # class from measured performance. Computed just above anyway.
-                'per_class': per_class,
-            })
-
-    for loner in tqdm(loners, desc=f'Gen {generation}: carrying loners'):
-        model = model_by_id[loner]
-        budget.count_forward_train(FORWARD_TRAIN_PASSES_PER_LONER)
-
-        cert = set(by_id[loner]['Certificate'])
-        logger.log_train({
-            'stage': 'loner',
-            'generation': generation,
-            'budget': round(budget.spent, 4),
-            'parents': [loner],
-            'certificate': sorted(cert),
-            'val_overall': by_id[loner]['Joint'],
-        })
-
-        offspring.append({
-            'model': model,
-            'certificate': cert,
-            'parents': [loner],
-            'head': None,
-            'is_loner': True,
-            'per_class': by_id[loner].get('Per Class'),
-        })
-
-    return offspring
+    """Merge every couple (GLOBA, once each way), carry every loner."""
+    return _breed_globa(pairs, loners, population_info, models, args, data,
+                        budget, logger, generation, globa_core)
 
 
 def generation_mutation_cost(offspring, args):
@@ -613,57 +511,15 @@ def mutate_and_save(offspring, args, data, next_dir, budget, logger, generation)
 # Driver
 # --------------------------------------------------------------------------- #
 
-def mating_needs_globa(args):
-    """Whether mate CHOICE consults the GLOBA decomposition.
-
-    Deliberately not "is a backbone loaded". The backbone is loaded whenever
-    mating OR MERGING needs it, and conflating the two was a real bug: with
-    --merger globa and --mating-mode certificate, the pair-score matrix was
-    built because merging had pulled the backbone in, and then handed to
-    select_mates as `scores`. select_mates only builds the certificate matrix
-    when `scores is None`, so the certificate score never ran and the
-    population mated on GLOBA D_minus while its config said 'certificate'.
-    Measured on the affected run: 6% of couples were top-tier by certificate,
-    where certificate mating gives ~100%.
-    """
-    return args.mating_mode in ('globa', 'hybrid', 'learn')
-
-
-def mating_inputs(args, pair_scores):
-    """(scores, tiebreak) for select_mates, given the GLOBA matrix or None.
-
-    'globa' and 'learn' use the matrix AS the score -- cell-type shares in the
-    first case, predicted offspring quality in the second. 'hybrid' passes it
-    separately as a tie-break and lets selection build the certificate matrix
-    itself. 'certificate' and 'random' must receive None, so selection builds
-    their own -- passing anything else silently replaces the scoring rule.
-    """
-    if args.mating_mode == 'hybrid':
-        return None, pair_scores
-    if args.mating_mode in ('globa', 'learn'):
-        # 'learn' also scores ON the matrix, but it holds predicted offspring
-        # quality rather than a cell-type share. Returning None here would
-        # leave selection with nothing and it refuses rather than guessing.
-        return pair_scores, None
-    return None, None
-
-
 def _load_globa_core(args):
     """The phase-A backbone GLOBA measures task vectors against.
 
-    Loaded when mating OR merging needs it. Refused without a shared origin:
-    a task vector is `agent - core`, and under --pretrain-mode none every agent
-    starts from its own random initialisation, so there is no core and the
-    decomposition would be describing initialisation noise.
+    Refused without a shared origin: a task vector is `agent - core`, and
+    under --pretrain-mode none every agent starts from its own random
+    initialisation, so there is no core and the decomposition would be
+    describing initialisation noise.
     """
-    needs = [flag for flag, on in (
-        ('--mating-mode ' + args.mating_mode,
-         args.mating_mode in ('globa', 'hybrid')),
-        ('--merger globa', args.merger == 'globa'),
-        ('--log-profiles', getattr(args, 'log_profiles', False)),
-    ) if on]
-    if not needs:
-        return None
+    needs = ['--mating-mode globa', '--merger globa']
     if args.pretrain_mode != 'ssl':
         raise SystemExit(
             f'{" and ".join(needs)} requires --pretrain-mode ssl.\n'
@@ -681,38 +537,6 @@ def run_evolution(args, budget, data, logger, evaluator):
     """Evolve until the training budget is exhausted."""
     raw_config = build_raw_config(args)
     globa_core = _load_globa_core(args)
-
-    # The learned mating function, fitted by phase C before evolution began.
-    # Loaded once: the network is fixed for the run, and only the coefficients
-    # it emits move, as the population's context moves.
-    # --mating-mode learn: the pair-quality net, fitted by phase C across
-    # several populations. Predicts the offspring's quality from the pair's
-    # genetic profile, so mating ranks couples by what their child would be.
-    quality_net = None
-    if args.mating_mode == 'learn':
-        from sesil import mating_fn
-        # A model trained by train_mating.py, or the one phase C fitted.
-        qpath = args.mating_model or mating_fn.quality_path(args)
-        if not os.path.exists(qpath):
-            raise SystemExit(
-                f'--mating-mode learn, but no fitted pair-quality net at '
-                f'{qpath}. Phase C writes it before evolution starts, or pass '
-                f'--mating-model.')
-        quality_net = mating_fn.load_quality(qpath)
-        print(f'[evolution] pair-quality net loaded from {qpath}')
-
-    mating_net = None
-    if args.globa_with == 'learned':
-        from sesil import mating_fn
-        path = mating_fn.default_path(args)
-        if not os.path.exists(path):
-            raise SystemExit(
-                f'--globa-with learned, but no fitted mating function at '
-                f'{path}. Phase C writes it before evolution starts; a run '
-                f'resumed with --start-gen past phase C needs the file from '
-                f'the original run directory.')
-        mating_net = mating_fn.load(path)
-        print(f'[evolution] learned mating function loaded from {path}')
 
     generation = args.start_gen
     completed = 0
@@ -754,138 +578,37 @@ def run_evolution(args, budget, data, logger, evaluator):
                 val_per_class=[info['ValPerClass'] for info in population_info],
                 certificates=[info['Certificate'] for info in population_info])
 
-            # --log-profiles: the genetic profile of every ordered pair, written
-            # to the log so the genetic-learning dataset can use this
-            # generation even after --keep-generations deletes its weights.
-            profiles = None
-            # [datagen] always: the samples need them.
-            if globa_core is not None:
-                from sesil.globa_stats import TYPES
-                from sesil.selection import pair_profiles
-                args.head_prefix = classifier_name(models[0]) + '.'
-                p_states = {info['Model Name']:
-                            {k: v.detach().cpu() for k, v in m.state_dict().items()}
-                            for info, m in zip(population_info, models)}
-                p_ids = [info['Model Name'] for info in population_info]
-                t_p = time.time()
-                profiles = pair_profiles(p_ids, p_states, globa_core, args)
-                del p_states
-                if getattr(args, 'log_profiles', False):
-                    logger.log_train({
-                        'stage': 'profiles',
-                        'generation': generation,
-                        'budget': round(budget.spent, 4),
-                        'columns': ['base', 'donor'] + list(TYPES) + ['novel'],
-                        'pairs': [[a, b] + [float(prof[t]) for t in TYPES]
-                                  + [float(prof.get('_novel', 0.0))]
-                                  for (a, b), prof in sorted(profiles.items())],
-                    })
-                print(f'[gen {generation}] {len(profiles)} pair profiles '
-                      f'({time.time() - t_p:.1f}s)')
+            # [datagen] the profile of every ordered pair: the samples' input,
+            # and the GLOBA mating scores below are read from it.
+            args.head_prefix = classifier_name(models[0]) + '.'
+            ids = [info['Model Name'] for info in population_info]
+            states = {info['Model Name']:
+                      {k: v.detach().cpu() for k, v in m.state_dict().items()}
+                      for info, m in zip(population_info, models)}
+            t0 = time.time()
+            profiles = pair_profiles(ids, states, globa_core, args)
+            del states
+            print(f'[gen {generation}] {len(profiles)} pair profiles '
+                  f'({time.time() - t0:.1f}s)')
 
-            # GLOBA scoring needs the agents' weights and the shared
-            # backbone, neither of which selection can reach on its own.
-            pair_scores = None
-            # Certificate and hybrid ranking leave this None and selection
-            # builds the certificate gate itself; GLOBA ranking fills it with
-            # donor novelty, which only the decomposition can provide.
-            mate_gate = None
-            if globa_core is not None and mating_needs_globa(args):
-                head_prefix = classifier_name(models[0]) + '.'
-                args.head_prefix = head_prefix
-                states = {info['Model Name']:
-                          {k: v.detach().cpu() for k, v in m.state_dict().items()}
-                          for info, m in zip(population_info, models)}
-                ids = [info['Model Name'] for info in population_info]
-                t0 = time.time()
-                # One coefficient vector per generation: it reads the
-                # population's context, which is the same for every pair in it.
-                coeffs = None
-                if mating_net is not None:
-                    from sesil import mating_fn
-                    ctx = mating_fn.context_features(population_info, args)
-                    coeffs = mating_net.coefficients(ctx)
-                    logger.log_train({
-                        'stage': 'mating_fn',
-                        'generation': generation,
-                        'budget': round(budget.spent, 4),
-                        'coefficients': coeffs,
-                        'context': {k: float(v) for k, v in
-                                    zip(mating_fn.CONTEXT_FIELDS, ctx)},
-                    })
-                    print(f'[gen {generation}] learned mating coefficients: '
-                          + '  '.join(f'{k}={v:+.3f}' for k, v in coeffs.items()))
-                if args.mating_mode == 'learn':
-                    from sesil.selection import learn_score_matrix
-                    pair_scores = learn_score_matrix(ids, states, globa_core,
-                                                     args, quality_net,
-                                                     profiles=profiles)
-                    vals = [v for row in pair_scores.values()
-                            for v in row.values()]
-                    print(f'[gen {generation}] predicted offspring quality: '
-                          f'min {min(vals):.3f}  median '
-                          f'{sorted(vals)[len(vals) // 2]:.3f}  '
-                          f'max {max(vals):.3f}  (floor {args.mate_floor})')
-                elif args.mating_mode == 'hybrid':
-                    # Hybrid consults GLOBA only to settle ties, which touches
-                    # ~25 of 190 pairs per generation at pop-size 20. Scoring
-                    # them all up front cost hours per run for numbers nothing
-                    # read, so the scorer decomposes a pair when asked.
-                    pair_scores = LazyGlobaScores(ids, states, globa_core,
-                                                  args, coeffs=coeffs)
-                    # Lazy by design, so the novelty matrix fills in only for
-                    # the pairs the tie-break actually looks at. Hybrid ranks
-                    # on certificates, so its gate is the certificate one and
-                    # selection builds it itself.
-                    mate_gate = None
-                else:
-                    # --mating-mode globa ranks EVERY candidate by this score,
-                    # so every pair is genuinely needed and eager is no slower.
-                    novelty = {} if args.mate_floor > 0 else None
-                    # [datagen] same scores as globa_score_matrix, from the
-                    # profiles above instead of a second decomposition.
-                    from sesil.selection import _globa_value
-                    pair_scores = {a: {} for a in ids}
-                    for (a, b), prof in profiles.items():
-                        pair_scores[a][b] = _globa_value(prof, args.globa_with,
-                                                         coeffs)
-                        if novelty is not None:
-                            novelty.setdefault(a, {})[b] = float(
-                                prof.get('_novel', 0.0))
-                    # GLOBA ranks on normalised shares, which say nothing about
-                    # HOW MUCH a donor brings. The gate uses the unnormalised
-                    # energy outside D_plus instead: structure the base does not
-                    # already have.
-                    mate_gate = novelty
-                    print(f'[gen {generation}] globa pair scoring '
-                          f'({args.globa_with}) took {time.time() - t0:.1f}s')
-                # NOTE: `states` is captured by the lazy scorer, so it must not
-                # be freed here in hybrid mode -- it is still needed.
-                if args.mating_mode != 'hybrid':
-                    del states
+            # --mating-mode globa ranks every candidate by its --globa-with
+            # share: the same scores as globa_score_matrix, from the profiles.
+            # GLOBA ranks on normalised shares, which say nothing about HOW
+            # MUCH a donor brings; --mate-floor gates on the unnormalised
+            # energy outside D_plus instead.
+            novelty = {} if args.mate_floor > 0 else None
+            pair_scores = {a: {} for a in ids}
+            for (a, b), prof in profiles.items():
+                pair_scores[a][b] = _globa_value(prof, args.globa_with)
+                if novelty is not None:
+                    novelty.setdefault(a, {})[b] = float(prof.get('_novel', 0.0))
 
-            # Which of the two slots the GLOBA matrix fills, if either. See
-            # mating_inputs: certificate and random must get None in BOTH, or
-            # selection silently uses whatever it was handed instead of the
-            # scoring rule the run asked for.
-            scores, tiebreak = mating_inputs(args, pair_scores)
             mate_stats = {}
             pairs, loners = select_mates(population_info, args,
-                                         scores=scores, tiebreak=tiebreak,
-                                         stats=mate_stats,
-                                         gate=mate_gate)
+                                         scores=pair_scores, tiebreak=None,
+                                         stats=mate_stats, gate=novelty)
             print(f'[gen {generation}] {len(pairs)} couples, {len(loners)} loners')
-
-            # How much GLOBA work the tie-break actually needed. Logged because
-            # it is the number that says whether hybrid is doing anything: a
-            # generation that scored 0 pairs settled every choice on the
-            # certificate alone, which is plain --mating-mode certificate.
-            scored = getattr(pair_scores, 'computed', None)
-            if scored is not None:
-                n = len(population_info)
-                print(f'[gen {generation}] globa tie-break scored {scored} of '
-                      f'{n * (n - 1) // 2} pairs in {time.time() - t0:.1f}s')
-                del states
+            scored = None
 
             logger.log_train({
                 'stage': 'mating',

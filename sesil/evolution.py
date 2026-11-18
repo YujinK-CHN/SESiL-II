@@ -522,7 +522,6 @@ def _load_globa_core(args):
         ('--mating-mode ' + args.mating_mode,
          args.mating_mode in ('globa', 'hybrid')),
         ('--merger globa', args.merger == 'globa'),
-        ('--log-profiles', getattr(args, 'log_profiles', False)),
     ) if on]
     if not needs:
         return None
@@ -553,7 +552,7 @@ def run_evolution(args, budget, data, logger, evaluator):
     quality_net = None
     if args.mating_mode == 'learn':
         from sesil import mating_fn
-        # A model trained by train_mating.py, or the one phase C fitted.
+        # A model given by --mating-model, or the one phase C fitted.
         qpath = args.mating_model or mating_fn.quality_path(args)
         if not os.path.exists(qpath):
             raise SystemExit(
@@ -615,33 +614,6 @@ def run_evolution(args, budget, data, logger, evaluator):
                 val_per_class=[info['ValPerClass'] for info in population_info],
                 certificates=[info['Certificate'] for info in population_info])
 
-            # --log-profiles: the genetic profile of every ordered pair, written
-            # to the log so the genetic-learning dataset can use this
-            # generation even after --keep-generations deletes its weights.
-            profiles = None
-            if getattr(args, 'log_profiles', False) and globa_core is not None:
-                from sesil.globa_stats import TYPES
-                from sesil.selection import pair_profiles
-                args.head_prefix = classifier_name(models[0]) + '.'
-                p_states = {info['Model Name']:
-                            {k: v.detach().cpu() for k, v in m.state_dict().items()}
-                            for info, m in zip(population_info, models)}
-                p_ids = [info['Model Name'] for info in population_info]
-                t_p = time.time()
-                profiles = pair_profiles(p_ids, p_states, globa_core, args)
-                del p_states
-                logger.log_train({
-                    'stage': 'profiles',
-                    'generation': generation,
-                    'budget': round(budget.spent, 4),
-                    'columns': ['base', 'donor'] + list(TYPES) + ['novel'],
-                    'pairs': [[a, b] + [float(prof[t]) for t in TYPES]
-                              + [float(prof.get('_novel', 0.0))]
-                              for (a, b), prof in sorted(profiles.items())],
-                })
-                print(f'[gen {generation}] logged {len(profiles)} pair profiles '
-                      f'({time.time() - t_p:.1f}s)')
-
             # GLOBA scoring needs the agents' weights and the shared
             # backbone, neither of which selection can reach on its own.
             pair_scores = None
@@ -677,8 +649,7 @@ def run_evolution(args, budget, data, logger, evaluator):
                 if args.mating_mode == 'learn':
                     from sesil.selection import learn_score_matrix
                     pair_scores = learn_score_matrix(ids, states, globa_core,
-                                                     args, quality_net,
-                                                     profiles=profiles)
+                                                     args, quality_net)
                     vals = [v for row in pair_scores.values()
                             for v in row.values()]
                     print(f'[gen {generation}] predicted offspring quality: '

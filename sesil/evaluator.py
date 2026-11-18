@@ -36,8 +36,7 @@ intended: one schema, no special-casing at plot time.
 
 import numpy as np
 
-from sesil.fitness import (accuracy_from_probabilities, evaluate_all_classes,
-                           predict_probabilities)
+from sesil.fitness import accuracy_from_probabilities, predict_probabilities
 
 
 class Evaluator:
