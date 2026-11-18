@@ -90,6 +90,11 @@ def main(argv=None):
               'subset_mode': args.subset_mode if args.method == 'sesil' else None,
               'mating_rounds': args.mating_rounds if args.method == 'sesil' else None,
               'mate_floor': args.mate_floor if args.method == 'sesil' else None,
+              # The model's folder name: mating_models/<name>/pair_quality.pt.
+              'mating_model': (os.path.basename(os.path.dirname(
+                                   os.path.abspath(args.mating_model)))
+                               if args.method == 'sesil' and args.mating_model
+                               else None),
               'learn_pairing': (args.learn_pairing
                                 if args.method == 'sesil'
                                 and args.mating_mode == 'learn' else None),
@@ -239,7 +244,10 @@ def _run_sesil(args, budget, data, logger, evaluator):
     # it runs before evolution because the rule has to exist by generation 0.
     # Its cost is forward-only, so it does not eat the backprop budget, but it
     # is charged and reported like every other forward pass.
-    if (args.globa_with == 'learned' or args.mating_mode == 'learn') \
+    # A learn run given --mating-model mates on that trained network and has
+    # nothing to fit, so phase C (and its budget) is skipped.
+    if (args.globa_with == 'learned'
+            or (args.mating_mode == 'learn' and not args.mating_model)) \
             and args.start_gen == 0:
         from sesil.phase_c import run_phase_c
         run_phase_c(args, budget, data, logger)

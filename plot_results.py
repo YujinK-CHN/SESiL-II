@@ -103,6 +103,7 @@ SESIL_REFERENCE = {
     'subset_mode': 'random',
     'mating_rounds': 15,
     'mate_floor': 0.0,
+    'mating_model': None,
     'learn_pairing': None,
     'phase_c_rank_weight': None,
     'individual_budget': 0.5,

@@ -552,11 +552,13 @@ def run_evolution(args, budget, data, logger, evaluator):
     quality_net = None
     if args.mating_mode == 'learn':
         from sesil import mating_fn
-        qpath = mating_fn.quality_path(args)
+        # A model trained by train_mating.py, or the one phase C fitted.
+        qpath = args.mating_model or mating_fn.quality_path(args)
         if not os.path.exists(qpath):
             raise SystemExit(
                 f'--mating-mode learn, but no fitted pair-quality net at '
-                f'{qpath}. Phase C writes it before evolution starts.')
+                f'{qpath}. Phase C writes it before evolution starts, or pass '
+                f'--mating-model.')
         quality_net = mating_fn.load_quality(qpath)
         print(f'[evolution] pair-quality net loaded from {qpath}')
 

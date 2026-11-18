@@ -579,6 +579,12 @@ def _add_selection_config(parser):
     group.add_argument('--phase-c-lr', type=float, default=0.01,
                        help='LEARNED MATING ONLY. Adam learning rate for the '
                             'mating function.')
+    group.add_argument('--mating-model', type=str, default=None,
+                       help='LEARN MODE ONLY. A mating network trained by '
+                            'train_mating.py (mating_models/<name>/'
+                            'pair_quality.pt). Given, phase C is skipped and '
+                            'evolution mates on this model; not given, phase '
+                            'C fits one for this run as before.')
     group.add_argument('--learn-pairing', type=str, default='mutual',
                        choices=['mutual', 'engineer'],
                        help='LEARN MODE ONLY. How the mating network\'s '
@@ -944,6 +950,13 @@ def validate(args):
             f'combination, merge(base, donor), and builds exactly that child. '
             f'Only the asymmetric GLOBA operator builds a directed child; the '
             f'other mergers do not. Use --merger globa.')
+
+    if args.mating_model and args.mating_mode != 'learn':
+        raise SystemExit(
+            f'--mating-model is a learned mating network and is only read by '
+            f'--mating-mode learn, not {args.mating_mode}.')
+    if args.mating_model and not os.path.exists(args.mating_model):
+        raise SystemExit(f'--mating-model {args.mating_model} does not exist.')
 
     if args.mating_mode == 'learn' and args.phase_c_populations < 1:
         raise SystemExit(
