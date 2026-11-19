@@ -7,8 +7,11 @@
 #
 #   * Jobs start with --export=NONE: nothing from the login shell carries
 #     over, so the job script loads the modules itself before the venv.
-#   * Each GPU comes with a fixed 24 cores and 187.5 GB, so this asks only for
-#     --gpus-per-node (at most 4 per node); --mem / --cpus-per-task are not set.
+#   * A job may ask for 1 GPU or whole 4-GPU nodes, nothing in between. Each
+#     seed therefore gets its OWN 1-GPU job (and its own chain): no idle GPU,
+#     single GPUs are scheduled sooner, and a seed that fails or finishes does
+#     not hold the others. Each GPU comes with a fixed 24 cores and 187.5 GB,
+#     so --mem / --cpus-per-task are not set.
 #   * HOME is read-only on compute nodes. The code stays in ~/SESiL-II, but
 #     results, data and caches go to $SCRATCH.
 #   * Every GPU partition has a 24 h limit. With --chain K, K jobs of up to 24 h
@@ -17,13 +20,15 @@
 #     must be able to resume (generate_dataset.py --resume). A job that finds
 #     its run already finished exits at once.
 #
-#   bash submit_trillium.sh --account def-zinovi --chain 4 <run.sh flags...>
+#   bash submit_trillium.sh --account def-zinovi --chain 4 --seeds 0,1,3 <run.sh flags...>
+#   -> 3 chains of 4 jobs, one per seed.
 #
 # Slurm settings come from flags or environment:
 #   --account   (or $SESIL_ACCOUNT)   required
 #   --time      (or $SESIL_TIME)      default 24:00:00 (the maximum)
 #   --chain     (or $SESIL_CHAIN)     default 1; jobs queued one after another
-#   --partition (or $SESIL_PARTITION) default compute (debug: 2 h, for a test)
+#   --partition (or $SESIL_PARTITION) default compute (debug: 1 h, one job
+#                                     per user, so one seed and --chain 1)
 #   --modules   (or $SESIL_MODULES)   default "StdEnv/2023 python/3.11"; must
 #                                     match the modules the venv was made with
 #   --venv      (or $SESIL_VENV)      default ~/ENV_sesil
@@ -63,7 +68,8 @@ while [[ $# -gt 0 ]]; do
     --repo)      REPO="$2";      shift 2;;
     --dry-run)   DRY_RUN=1;      shift;;
     # Needed by both this script and run.sh, so read AND passed through.
-    --seeds)     SEEDS="$2";     PASS+=("$1" "$2"); shift 2;;
+    # One job per seed: --seeds is given to run.sh per job, below.
+    --seeds)     SEEDS="$2";     shift 2;;
     --dataset)   DATASET="$2";   PASS+=("$1" "$2"); shift 2;;
     --exp-name)  EXP_NAME="$2";  PASS+=("$1" "$2"); shift 2;;
     --data-dir)  DATA_DIR="$2";  shift 2;;
@@ -89,19 +95,6 @@ if (( CHAIN > 1 )) && [[ " ${PASS[*]} " != *" --resume "* ]]; then
 fi
 
 IFS=',' read -ra SEED_LIST <<< "$SEEDS"
-N_SEEDS=${#SEED_LIST[@]}
-if (( N_SEEDS > 4 )); then
-  echo "$N_SEEDS seeds need $N_SEEDS GPUs; a Trillium node has 4. Submit in groups of <= 4." >&2
-  exit 1
-fi
-
-# Seed i -> cuda:i (pinned in run.sh, so no lock files are written to the
-# read-only repo).
-GPU_LIST=""
-for ((i = 0; i < N_SEEDS; i++)); do
-  GPU_LIST+="${i}"
-  (( i < N_SEEDS - 1 )) && GPU_LIST+=","
-done
 
 mkdir -p "$DATA_DIR" "$OUT_ROOT" "$OUT_ROOT/jobs"
 
@@ -134,24 +127,30 @@ else:
 PYEOF
 fi
 
-# ---- build the job script ------------------------------------------------ #
+# ---- one job script and one chain per seed ------------------------------- #
 SAFE_NAME="${EXP_NAME//[^A-Za-z0-9._-]/_}"
-JOB="$OUT_ROOT/jobs/${SAFE_NAME}.sbatch"
 CACHE="$SCRATCH/.cache"
+ALL_IDS=()
 
-RUN_ARGS=""
-for a in "${PASS[@]}"; do RUN_ARGS+=" $(printf '%q' "$a")"; done
-RUN_ARGS+=" --gpus $(printf '%q' "$GPU_LIST")"
-RUN_ARGS+=" --run-mode parallel"
-RUN_ARGS+=" --data-dir $(printf '%q' "$DATA_DIR")"
-RUN_ARGS+=" --output-root $(printf '%q' "$OUT_ROOT")"
+for SEED in "${SEED_LIST[@]}"; do
+  JOB="$OUT_ROOT/jobs/${SAFE_NAME}_seed${SEED}.sbatch"
 
-cat > "$JOB" <<EOF
+  RUN_ARGS=""
+  for a in "${PASS[@]}"; do RUN_ARGS+=" $(printf '%q' "$a")"; done
+  RUN_ARGS+=" --seeds $(printf '%q' "$SEED")"
+  # One seed on the job's one GPU, pinned (so run.sh writes no lock files to
+  # the read-only repo).
+  RUN_ARGS+=" --gpus 0"
+  RUN_ARGS+=" --run-mode parallel"
+  RUN_ARGS+=" --data-dir $(printf '%q' "$DATA_DIR")"
+  RUN_ARGS+=" --output-root $(printf '%q' "$OUT_ROOT")"
+
+  cat > "$JOB" <<EOF
 #!/bin/bash
 #SBATCH --account=${ACCOUNT}
-#SBATCH --job-name=${SAFE_NAME}
+#SBATCH --job-name=${SAFE_NAME}_s${SEED}
 #SBATCH --partition=${PARTITION}
-#SBATCH --gpus-per-node=${N_SEEDS}
+#SBATCH --gpus-per-node=1
 #SBATCH --time=${TIME}
 #SBATCH --output=${OUT_ROOT}/%x-%j.out
 
@@ -177,34 +176,39 @@ bash run.sh${RUN_ARGS}
 
 echo "finished: \$(date)"
 EOF
-chmod +x "$JOB"
+  chmod +x "$JOB"
+  echo "[submit] seed ${SEED}: job script -> $JOB"
 
-echo "[submit] job script -> $JOB"
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "---------------------------------------------------------------"
+    cat "$JOB"
+    echo "---------------------------------------------------------------"
+    continue
+  fi
+
+  # afterany: the next link starts whether the previous one ended normally,
+  # hit the time limit, or failed -- resume decides what is left to do.
+  PREV=""
+  IDS=()
+  for ((k = 1; k <= CHAIN; k++)); do
+    DEP=()
+    [[ -n "$PREV" ]] && DEP=(--dependency=afterany:"$PREV")
+    if ! PREV=$(sbatch --parsable ${DEP[@]+"${DEP[@]}"} "$JOB"); then
+      # e.g. the debug partition accepts only one queued job per user.
+      echo "[submit] seed ${SEED}: link $k of $CHAIN was refused; queued so far: ${ALL_IDS[*]:-none} ${IDS[*]:-}" >&2
+      echo "[submit] resubmit later with: sbatch $JOB" >&2
+      exit 1
+    fi
+    PREV="${PREV%%;*}"
+    IDS+=("$PREV")
+  done
+  ALL_IDS+=("${IDS[@]}")
+  echo "[submit] seed ${SEED}: queued ${CHAIN} job(s): ${IDS[*]}"
+done
+
 if [[ $DRY_RUN -eq 1 ]]; then
-  echo "---------------------------------------------------------------"
-  cat "$JOB"
-  echo "---------------------------------------------------------------"
-  echo "[submit] --dry-run: nothing submitted (would queue $CHAIN job(s))."
+  echo "[submit] --dry-run: nothing submitted (would queue ${#SEED_LIST[@]} x ${CHAIN} job(s))."
   exit 0
 fi
-
-# ---- queue the chain ----------------------------------------------------- #
-# afterany: the next link starts whether the previous one ended normally, hit
-# the time limit, or failed -- resume decides what is left to do.
-PREV=""
-IDS=()
-for ((k = 1; k <= CHAIN; k++)); do
-  DEP=()
-  [[ -n "$PREV" ]] && DEP=(--dependency=afterany:"$PREV")
-  if ! PREV=$(sbatch --parsable ${DEP[@]+"${DEP[@]}"} "$JOB"); then
-    # e.g. the debug partition accepts only one queued job per user.
-    echo "[submit] link $k of $CHAIN was refused; queued so far: ${IDS[*]:-none}" >&2
-    echo "[submit] resubmit the rest later with: sbatch $JOB" >&2
-    exit 1
-  fi
-  PREV="${PREV%%;*}"
-  IDS+=("$PREV")
-done
-echo "[submit] queued ${CHAIN} job(s): ${IDS[*]}"
 echo "[submit] watch with: squeue -u \$USER     logs in $OUT_ROOT"
-echo "[submit] cancel the whole chain with: scancel ${IDS[*]}"
+echo "[submit] cancel everything with: scancel ${ALL_IDS[*]}"
