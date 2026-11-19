@@ -119,18 +119,22 @@ if [[ $DRY_RUN -eq 0 ]]; then
   source "$VENV/bin/activate" 2>/dev/null || {
     echo "Could not activate $VENV. Pass --venv or set \$SESIL_VENV." >&2
     exit 1; }
-  python - "$DATASET" "$DATA_DIR" <<'PYEOF'
+  python - "$DATASET" "$DATA_DIR" "$REPO" <<'PYEOF'
+import os
 import sys
-import torchvision
-name, root = sys.argv[1], sys.argv[2]
-cls = {'cifar10': torchvision.datasets.CIFAR10,
-       'cifar100': torchvision.datasets.CIFAR100}.get(name)
-if cls is None:
+name, data_dir, repo = sys.argv[1], sys.argv[2], sys.argv[3]
+# The same folder the run reads (sesil/data.py: <data-dir>/<subdir>), so the
+# job finds it and never tries to download on an offline compute node.
+sys.path.insert(0, repo)
+from sesil.data import _DATASET_SPEC
+spec = _DATASET_SPEC.get(name)
+if spec is None:
     print(f'[submit] no pre-fetch rule for {name!r}; make sure it is already '
-          f'in {root}')
+          f'in {data_dir}')
 else:
+    root = os.path.join(data_dir, spec['subdir'])
     for train in (True, False):
-        cls(root=root, train=train, download=True)
+        spec['wrapper'](root=root, train=train, download=True)
     print(f'[submit] {name} ready in {root}')
 PYEOF
 fi
