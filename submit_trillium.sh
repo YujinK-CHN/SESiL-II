@@ -188,10 +188,13 @@ fi
 PREV=""
 IDS=()
 for ((k = 1; k <= CHAIN; k++)); do
-  if [[ -z "$PREV" ]]; then
-    PREV=$(sbatch --parsable "$JOB")
-  else
-    PREV=$(sbatch --parsable --dependency=afterany:"$PREV" "$JOB")
+  DEP=()
+  [[ -n "$PREV" ]] && DEP=(--dependency=afterany:"$PREV")
+  if ! PREV=$(sbatch --parsable ${DEP[@]+"${DEP[@]}"} "$JOB"); then
+    # e.g. the debug partition accepts only one queued job per user.
+    echo "[submit] link $k of $CHAIN was refused; queued so far: ${IDS[*]:-none}" >&2
+    echo "[submit] resubmit the rest later with: sbatch $JOB" >&2
+    exit 1
   fi
   PREV="${PREV%%;*}"
   IDS+=("$PREV")
