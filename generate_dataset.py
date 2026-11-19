@@ -3,7 +3,12 @@ Dataset generator entry point: a copy of main.py that runs datagen/evolution.py
 (a copy of sesil/evolution.py that also writes <run_dir>/samples.csv) in place
 of sesil/evolution.py. GLOBA mating and GLOBA merging only; the baseline,
 probe and phase-C paths of main.py are removed. Launched by
-generate_dataset.sh -> submit.sh -> run.sh -> run_datagen.sh.
+generate_dataset.sh -> submit.sh (or submit_trillium.sh) -> run.sh ->
+run_datagen.sh.
+
+--resume (generator only; see datagen/resume.py): continue this run from its
+latest complete generation, do nothing if it already finished, or start fresh
+if nothing usable is on disk. Lets one run span a chain of time-limited jobs.
 
 The original main.py docstring follows.
 
@@ -45,6 +50,10 @@ from sesil.logging import RunLogger
 
 
 def main(argv=None):
+    # [datagen] --resume is ours, not config.py's.
+    argv = list(sys.argv[1:] if argv is None else argv)
+    resume = '--resume' in argv
+    argv = [a for a in argv if a != '--resume']
     args = resolve(get_config().parse_args(argv))
     # [datagen] the generator is defined for GLOBA mating + GLOBA merging only.
     if (args.method != 'sesil' or args.mating_mode != 'globa'
@@ -52,6 +61,22 @@ def main(argv=None):
             or args.globa_with not in ('D_minus', 'D_plus', 'E')):
         raise SystemExit('[datagen] needs --method sesil --mating-mode globa '
                          '--merger globa --globa-with D_minus|D_plus|E')
+
+    state = None
+    args.datagen_resumed_from = None
+    if resume:
+        from datagen import resume as _resume
+        state = _resume.plan(args)
+        if state == 'done':
+            print(f'[resume] {args.run_dir} already finished (samples.csv '
+                  f'exists); nothing to do.')
+            return None
+        if state is not None:
+            args.start_gen = state['generation']
+            args.datagen_resumed_from = state['generation']
+        else:
+            print('[resume] nothing usable on disk; starting fresh.')
+            _resume.set_aside(args)
 
     set_seed(args.seed)
 
@@ -139,6 +164,9 @@ def main(argv=None):
                                   else None)},
     )
 
+    if state is not None:
+        _resume.apply(state, args, budget, evaluator, logger)   # [datagen]
+
     _print_banner(args, data, budget)
 
     try:
@@ -205,7 +233,8 @@ def _run_sesil(args, budget, data, logger, evaluator):
 
     # Stage 1: pretrain. Always runs -- nothing is inherited from a previous
     # run, so every run's numbers describe only itself.
-    if args.start_gen == 0:
+    # [datagen] a resumed run skips pretrain even when resuming at gen 0.
+    if args.start_gen == 0 and args.datagen_resumed_from is None:
         population = build_population(args, data, budget, logger)
         if not population:
             raise RuntimeError(f'Pretrain produced no individuals in {args.population_dir}')

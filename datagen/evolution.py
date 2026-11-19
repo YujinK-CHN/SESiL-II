@@ -196,16 +196,20 @@ def _append_samples(path, rows):
         w.writerows(rows)
 
 
-def _finalize_samples(partial, final, n_generations):
+def _finalize_samples(partial, final):
     """[datagen] Fill n_generations and location = generation / (n_generations - 1).
 
-    0 at the first generation, 1 at the last; 0 for a one-generation run.
+    n_generations is read from the rows (every generation 0 .. last has its
+    own), so it is right however many jobs the run was split across. 0 at the
+    first generation, 1 at the last; 0 for a one-generation run. Returns
+    (rows, n_generations).
     """
     import csv
     if not os.path.exists(partial):
-        return 0
+        return 0, 0
     with open(partial, newline='', encoding='utf-8') as f:
         rows = list(csv.DictReader(f))
+    n_generations = max(int(r['generation']) for r in rows) + 1 if rows else 0
     for r in rows:
         r['n_generations'] = n_generations
         r['location'] = (int(r['generation']) / (n_generations - 1)
@@ -216,7 +220,7 @@ def _finalize_samples(partial, final, n_generations):
         w.writerows(rows)
     os.replace(final + '.tmp', final)
     os.remove(partial)
-    return len(rows)
+    return len(rows), n_generations
 
 
 def _collect_pair_children(population_info, models, core, args, data,
@@ -545,7 +549,6 @@ def run_evolution(args, budget, data, logger, evaluator):
 
     generation = args.start_gen
     completed = 0
-    last_evaluated = None   # [datagen]
 
     while completed < args.max_generations:
         if budget.exhausted:
@@ -640,7 +643,6 @@ def run_evolution(args, budget, data, logger, evaluator):
             # exactly as in sesil/evolution.py.
             _collect_pair_children(population_info, models, globa_core, args,
                                    data, generation, offspring, profiles)
-            last_evaluated = generation
 
         # Stop before mutating if this generation would overrun the budget --
         # a partially-finetuned generation is not a meaningful result.
@@ -688,9 +690,9 @@ def run_evolution(args, budget, data, logger, evaluator):
                              certificates=final_certs)
 
     # [datagen] the total is known now: write samples.csv.
-    if last_evaluated is not None:
-        n = _finalize_samples(*_samples_paths(args), last_evaluated + 1)
-        print(f'[samples] {n} samples, {last_evaluated + 1} generations -> '
+    n, n_gen = _finalize_samples(*_samples_paths(args))
+    if n:
+        print(f'[samples] {n} samples, {n_gen} generations -> '
               f'{_samples_paths(args)[1]}')
 
     print(f'\n{budget.report()}')
