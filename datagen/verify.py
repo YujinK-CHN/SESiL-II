@@ -30,7 +30,7 @@ def check_samples():
         rows = list(csv.DictReader(f))
     ok = (n == 2 and not os.path.exists(part)
           and list(rows[0]) == ev.SAMPLE_COLUMNS
-          and [float(r['location']) for r in rows] == [0.0, 0.6]
+          and [float(r['location']) for r in rows] == [0.0, 0.75]
           and {r['n_generations'] for r in rows} == {'5'}
           and rows[1]['type'] == 'D_minus' and rows[1]['head'] == 'label')
     return ok, rows

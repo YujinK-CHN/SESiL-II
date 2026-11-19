@@ -8,7 +8,8 @@ donor) and writes one row per pair to <run_dir>/samples.csv:
     generation, n_generations, location, share_A .. share_D_minus,
     child_val_overall, type, head
 
-location = generation / n_generations. The total is known only when the run
+location = generation / (n_generations - 1): 0 at the first generation, 1 at
+the last. The total is known only when the run
 ends, so rows go to samples.partial.csv during the run and samples.csv is
 written at the end.
 
@@ -196,7 +197,10 @@ def _append_samples(path, rows):
 
 
 def _finalize_samples(partial, final, n_generations):
-    """[datagen] Fill n_generations and location = generation / n_generations."""
+    """[datagen] Fill n_generations and location = generation / (n_generations - 1).
+
+    0 at the first generation, 1 at the last; 0 for a one-generation run.
+    """
     import csv
     if not os.path.exists(partial):
         return 0
@@ -204,7 +208,8 @@ def _finalize_samples(partial, final, n_generations):
         rows = list(csv.DictReader(f))
     for r in rows:
         r['n_generations'] = n_generations
-        r['location'] = int(r['generation']) / n_generations
+        r['location'] = (int(r['generation']) / (n_generations - 1)
+                         if n_generations > 1 else 0.0)
     with open(final + '.tmp', 'w', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=SAMPLE_COLUMNS)
         w.writeheader()
