@@ -5,7 +5,8 @@ Checks for the dataset generator (datagen/). Run: python -m datagen.verify
   2. GLOBA mating scores taken from the profiles equal globa_score_matrix's.
   3. --resume: where a run restarts, the budget and evaluator it restores,
      the sample rows it drops, and 'done' once samples.csv exists.
-  4. (info) how many lines of sesil/evolution.py the copy replaces or removes.
+  4. retention / retention_base / retention_donor on hand-computed cases.
+  5. (info) how many lines of sesil/evolution.py the copy replaces or removes.
 """
 
 import csv
@@ -36,6 +37,79 @@ def check_samples():
           and {r['n_generations'] for r in rows} == {'3'}
           and rows[1]['type'] == 'D_minus' and rows[1]['head'] == 'label')
     return ok, rows
+
+
+def check_retention():
+    """Hand-computed cases for retention / retention_base / retention_donor."""
+    from datagen.evolution import retention_scores
+    base = [0.8, 0.6, 0.1, 0.0]
+    donor = [0.2, 0.9, 0.7, 0.0]
+    child = [0.4, 0.6, 0.35, 0.5]
+    # base certified on {0, 1}, donor on {1, 2}; class 1 is on both -> max 0.9.
+    got = retention_scores(child, base, donor, {0, 1}, {1, 2})
+    want = {'retention': round((0.4 + 0.6 + 0.35) / (0.8 + 0.9 + 0.7), 6),
+            'retention_base': round((0.4 + 0.6) / (0.8 + 0.6), 6),
+            'retention_donor': round((0.6 + 0.35) / (0.9 + 0.7), 6)}
+    empty = retention_scores(child, base, donor, set(), set())
+    one = retention_scores(child, base, donor, {0}, set())
+    ok = (got == want
+          and empty == {'retention': '', 'retention_base': '', 'retention_donor': ''}
+          and one['retention'] == one['retention_base'] == 0.5
+          and one['retention_donor'] == '')
+    return ok, (got, want, empty, one)
+
+
+def check_collect():
+    """_collect_pair_children end to end with stub models: every ordered pair
+    gets a row with all columns, and a bred child is reused, not rebuilt."""
+    import torch
+    from datagen import evolution as ev
+    import sesil.globa_merge as gm
+    import sesil.pretrain as pt
+
+    ids = ['agent_000', 'agent_001', 'agent_002']
+    info = [{'Model Name': a, 'Certificate': {i}, 'Joint': 0.5 + i / 10,
+             'ValPerClass': [0.9 if c == i else 0.1 for c in range(3)]}
+            for i, a in enumerate(ids)]
+    models = [torch.nn.Linear(2, 3) for _ in ids]
+    offspring = [{'is_loner': False, 'base_parent': 'agent_000',
+                  'donor_parent': 'agent_001', 'val_overall': 0.77,
+                  'per_class': [0.9, 0.45, 0.0]}]
+    profiles = {(a, b): {t: 1 / 6 for t in ('A', 'B', 'C', 'E', 'D_plus', 'D_minus')}
+                for a in ids for b in ids if a != b}
+    run = tempfile.mkdtemp()
+    args = types.SimpleNamespace(
+        run_dir=run, globa_preset='globa', merge_head='label', probe_eta=0.8,
+        probe_svd_energy=0.9, probe_basis_energy=0.999, num_classes=3,
+        globa_with='D_minus')
+    data = types.SimpleNamespace(train_loader=lambda: None, val_loader=lambda: None)
+    built = []
+    saved = (gm.merge, pt.build_model, ev.reset_bn_stats,
+             ev.evaluate_all_classes, ev.classifier_name)
+    gm.merge = lambda *a, **k: {}
+    pt.build_model = lambda *a, **k: built.append(1) or torch.nn.Linear(2, 3)
+    ev.reset_bn_stats = lambda *a, **k: None
+    ev.evaluate_all_classes = lambda *a, **k: ([0.5, 0.5, 0.5], 0.5)
+    ev.classifier_name = lambda m: 'fc'
+    try:
+        ev._collect_pair_children(info, models, None, args, data, 0,
+                                  offspring, profiles)
+    finally:
+        (gm.merge, pt.build_model, ev.reset_bn_stats,
+         ev.evaluate_all_classes, ev.classifier_name) = saved
+    with open(ev._samples_paths(args)[0], newline='') as f:
+        rows = list(csv.DictReader(f))
+    first = rows[0]                       # (agent_000, agent_001): reused
+    ok = (len(rows) == 6 and len(built) == 5
+          and all(r[c] != '' for r in rows for c in ev.SAMPLE_COLUMNS
+                  if c not in ('n_generations', 'location'))
+          and float(first['child_val_overall']) == 0.77
+          and float(first['base_val_overall']) == 0.5
+          and float(first['donor_val_overall']) == 0.6
+          and float(first['retention']) == round(1.35 / 1.8, 6)
+          and float(first['retention_base']) == 1.0
+          and float(first['retention_donor']) == 0.5)
+    return ok, rows[:2]
 
 
 def check_scores():
@@ -180,6 +254,12 @@ def main():
     ok1, rows = check_samples()
     print(('PASS' if ok1 else 'FAIL') + '  samples.csv written and finalised'
           + ('' if ok1 else f': {rows}'))
+    ok4, info4 = check_retention()
+    print(('PASS' if ok4 else 'FAIL') + '  retention scores match hand-computed '
+          'values' + ('' if ok4 else f': {info4}'))
+    ok5, info5 = check_collect()
+    print(('PASS' if ok5 else 'FAIL') + '  every ordered pair gets a full row; '
+          'bred children reused' + ('' if ok5 else f': {info5}'))
     ok2, bad = check_scores()
     print(('PASS' if ok2 else 'FAIL') + '  mating scores from profiles == '
           'globa_score_matrix' + ('' if ok2 else f' (differ for {bad})'))
@@ -192,7 +272,7 @@ def main():
     # and the mating modes / mergers the generator never runs).
     print(f'INFO  datagen/evolution.py replaces or removes {n} line(s) of '
           f'sesil/evolution.py')
-    return 0 if ok1 and ok2 and ok3 else 1
+    return 0 if ok1 and ok2 and ok3 and ok4 and ok5 else 1
 
 
 if __name__ == '__main__':

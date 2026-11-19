@@ -9,7 +9,12 @@
 # Output, one file per run, one row per sample:
 #   <out-root>/<exp>/cifar100/<variant>/seed<N>/samples.csv
 #   generation, n_generations, location (= generation / (n_generations - 1)),
-#   share_A .. share_D_minus, child_val_overall, type, head
+#   share_A .. share_D_minus,
+#   base_val_overall, donor_val_overall, child_val_overall   (validation),
+#   retention, retention_base, retention_donor, type, head
+# retention = sum over the parents' certified classes of the child's accuracy /
+# the same sum for the parent certified on each class (better one if both);
+# _base / _donor use one parent's certificate. 1 = kept, <1 lost, >1 improved.
 # While the run is going it is samples.partial.csv; location is filled in when
 # the run ends (the total number of generations is only known then).
 #

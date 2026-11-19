@@ -176,7 +176,40 @@ def evaluate_and_certify(agent_ids, raw_config, args, data, budget, logger, gene
 
 SAMPLE_COLUMNS = (['generation', 'n_generations', 'location']
                   + [f'share_{t}' for t in ('A', 'B', 'C', 'E', 'D_plus', 'D_minus')]
-                  + ['child_val_overall', 'type', 'head'])
+                  + ['base_val_overall', 'donor_val_overall', 'child_val_overall',
+                     'retention', 'retention_base', 'retention_donor',
+                     'type', 'head'])
+
+
+def _retention(child_pc, ref):
+    """[datagen] sum_c child[c] / sum_c ref[c] over the classes in `ref`.
+
+    `ref` maps each class to the accuracy the parents had on it. A ratio of
+    sums, not a mean of per-class ratios, so a class a parent barely knew
+    cannot blow it up. 1 = kept, < 1 = lost, > 1 = the child does better (not
+    clipped). '' (blank) when there are no classes to keep.
+    """
+    denom = sum(ref.values())
+    if not ref or denom <= 0:
+        return ''
+    return round(sum(child_pc[c] for c in ref) / denom, 6)
+
+
+def retention_scores(child_pc, base_pc, donor_pc, cert_base, cert_donor):
+    """[datagen] How much of the parents' own classes the child keeps.
+
+    The parents' classes are their certificates -- the classes globa_merge is
+    told to transfer. retention uses the union, each class against the parent
+    certified on it (the better one if both); retention_base / _donor use one
+    certificate each, against that parent.
+    """
+    union = {c: max([base_pc[c]] * (c in cert_base) + [donor_pc[c]] * (c in cert_donor))
+             for c in set(cert_base) | set(cert_donor)}
+    return {
+        'retention': _retention(child_pc, union),
+        'retention_base': _retention(child_pc, {c: base_pc[c] for c in cert_base}),
+        'retention_donor': _retention(child_pc, {c: donor_pc[c] for c in cert_donor}),
+    }
 
 
 def _samples_paths(args):
@@ -245,7 +278,12 @@ def _collect_pair_children(population_info, models, core, args, data,
     certs = {info['Model Name']: set(info['Certificate'])
              for info in population_info}
     ids = [info['Model Name'] for info in population_info]
-    reuse = {(o['base_parent'], o['donor_parent']): float(o['val_overall'])
+    per_class = {info['Model Name']: list(info['ValPerClass'])
+                 for info in population_info}
+    parent_overall = {info['Model Name']: float(info['Joint'])
+                      for info in population_info}
+    reuse = {(o['base_parent'], o['donor_parent']):
+             (list(o['per_class']), float(o['val_overall']))
              for o in offspring if not o.get('is_loner') and 'base_parent' in o}
 
     saved = (random.getstate(), np.random.get_state(), torch.get_rng_state(),
@@ -258,8 +296,8 @@ def _collect_pair_children(population_info, models, core, args, data,
             for donor in ids:
                 if base == donor:
                     continue
-                overall = reuse.get((base, donor))
-                if overall is None:
+                measured = reuse.get((base, donor))
+                if measured is None:
                     child_sd = globa_merge(
                         states[base], states[donor], core,
                         classes_base=certs[base], classes_donor=certs[donor],
@@ -270,13 +308,19 @@ def _collect_pair_children(population_info, models, core, args, data,
                     child = build_model(args, args.num_classes)
                     child.load_state_dict(child_sd, strict=False)
                     reset_bn_stats(child, train_loader)
-                    _, overall = evaluate_all_classes(child, val_loader,
-                                                      args.num_classes)
+                    measured = evaluate_all_classes(child, val_loader,
+                                                    args.num_classes)
                     del child, child_sd
+                child_pc, overall = measured
                 prof = profiles[(base, donor)]
                 row = {'generation': generation,
+                       'base_val_overall': round(parent_overall[base], 6),
+                       'donor_val_overall': round(parent_overall[donor], 6),
                        'child_val_overall': round(float(overall), 6),
                        'type': args.globa_with, 'head': args.merge_head}
+                row.update(retention_scores(child_pc, per_class[base],
+                                            per_class[donor], certs[base],
+                                            certs[donor]))
                 row.update({f'share_{t}': float(prof[t])
                             for t in ('A', 'B', 'C', 'E', 'D_plus', 'D_minus')})
                 rows.append(row)
