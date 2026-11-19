@@ -158,6 +158,8 @@ cd ${REPO}
 
 # HOME is read-only here: keep Python, torch and matplotlib off it.
 export PYTHONDONTWRITEBYTECODE=1
+# Unbuffered, so a job killed at its time limit keeps its log up to the kill.
+export PYTHONUNBUFFERED=1
 export XDG_CACHE_HOME=${CACHE}
 export TORCH_HOME=${CACHE}/torch
 export MPLCONFIGDIR=${CACHE}/matplotlib
