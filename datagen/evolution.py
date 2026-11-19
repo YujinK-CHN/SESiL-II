@@ -545,6 +545,15 @@ def _load_globa_core(args):
 def run_evolution(args, budget, data, logger, evaluator):
     """Evolve until the training budget is exhausted."""
     raw_config = build_raw_config(args)
+    # [datagen] the agent loader (utils.prepare_data) reads the dataset from
+    # datasets/configs.py's './data/<subdir>', relative to the repo -- which is
+    # read-only on Trillium compute nodes, so torchvision tries to create and
+    # download it there. Point it at --data-dir, the folder the rest of the
+    # run (sesil/data.py) already reads.
+    import datasets.configs as _dataset_configs
+    _subdir = os.path.basename(getattr(
+        _dataset_configs, raw_config['dataset']['name'])['dir'].rstrip('/'))
+    raw_config['dataset']['dir'] = os.path.join(args.data_dir, _subdir)
     globa_core = _load_globa_core(args)
 
     generation = args.start_gen
